@@ -1,77 +1,48 @@
-import { useEffect, useState } from "react";
-import { getCommissions } from "../../../services/commissionsService";
+import React, { useEffect, useState } from 'react';
+import { getCommissionsSummary } from '../services/commissionsService';
+import type { CategoryRow, CommissionTotals } from '../types';
+import CommissionCard from '../components/CommissionCard';
+import CommissionTable from '../components/CommissionTable';
 
 export default function CommissionsPage() {
+    const [totals, setTotals] = useState<CommissionTotals | null>(null);
+    const [categories, setCategories] = useState<CategoryRow[]>([]);
     const [loading, setLoading] = useState(false);
-    const [items, setItems] = useState<any[]>([]);
-    const [filters, setFilters] = useState({
-        from: "",
-        to: "",
-        pdv: ""
-    });
+
+    useEffect(() => { load(); }, []);
 
     const load = async () => {
-        setLoading(true);
-        const data = await getCommissions(filters);
-        setItems(data.data || data);
-        setLoading(false);
+        try {
+            setLoading(true);
+            const res = await getCommissionsSummary();
+            setTotals(res.totals);
+            setCategories(res.categories || []);
+            setLoading(false);
+        } catch (err) {
+            console.error(err);
+            setLoading(false);
+        }
     };
 
-    useEffect(() => {
-        load();
-    }, []);
-
     return (
-        <div className="p-6">
-            <h1 className="text-2xl font-bold mb-4">Comisiones</h1>
+        <div className="p-6 max-w-7xl mx-auto">
+            <h1 className="text-2xl font-bold mb-4">Comisiones — Resumen</h1>
 
-            {/* FILTROS */}
-            <div className="grid grid-cols-3 gap-4 mb-4">
-                <input type="date" value={filters.from}
-                    onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+            {loading && <div> Cargando... </div>}
 
-                <input type="date" value={filters.to}
-                    onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+            {totals && (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                    <CommissionCard title="Ventas (USD)" value={totals.total_sales_usd.toLocaleString()} />
+                    <CommissionCard title="Comisiones (USD)" value={totals.total_commissions.toLocaleString()} />
+                    <CommissionCard title="% Comisión / Ventas" value={`${totals.commission_pct_of_sales}%`} />
+                    <CommissionCard title="Ventas Totales" value={totals.total_sales.toLocaleString()} />
+                </div>
+            )}
 
-                <input placeholder="PDV"
-                    value={filters.pdv}
-                    onChange={(e) => setFilters({ ...filters, pdv: e.target.value })}
-                />
-
-                <button
-                    className="bg-blue-600 text-white px-3 py-2 rounded"
-                    onClick={load}>
-                    Filtrar
-                </button>
+            <div className="bg-white p-4 rounded shadow">
+                <h2 className="font-semibold mb-4">Resumen por Categoría</h2>
+                <CommissionTable rows={categories} />
             </div>
-
-            {/* TABLA */}
-            <table className="table-auto w-full bg-white shadow">
-                <thead>
-                    <tr className="bg-gray-100">
-                        <th className="p-2">Vendedor</th>
-                        <th className="p-2">Fecha</th>
-                        <th className="p-2">Folio</th>
-                        <th className="p-2">PDV</th>
-                        <th className="p-2">Monto</th>
-                        <th className="p-2">Comisión</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {items.map((c: any) => (
-                        <tr key={c.id} className="border-b">
-                            <td className="p-2">{c.user?.name}</td>
-                            <td className="p-2">{c.sale?.sale_date}</td>
-                            <td className="p-2">{c.sale?.folio}</td>
-                            <td className="p-2">{c.sale?.pdv}</td>
-                            <td className="p-2">{c.sale?.amount}</td>
-                            <td className="p-2 font-bold text-green-600">
-                                {c.commission_amount}
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
         </div>
     );
 }

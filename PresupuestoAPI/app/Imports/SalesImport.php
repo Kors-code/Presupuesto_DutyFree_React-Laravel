@@ -71,6 +71,15 @@ class ImportSalesController extends Controller
         $skipped = 0;
         $errors = [];
         $created = ['products' => 0,'users' => 0,'sales' => 0,'commissions' => 0];
+        // 1) Crear batch del archivo importado
+$batch = \App\Models\ImportBatch::create([
+    'filename' => $request->file('file')->getClientOriginalName(),
+    'checksum' => md5_file($path),
+    'import_date' => now(),
+    'rows' => 0,
+    'status' => 'processing'
+]);
+
 
         DB::beginTransaction();
         try {
@@ -177,6 +186,10 @@ class ImportSalesController extends Controller
                         'currency' => $currency,
                         'cost' => $cost
                     ]);
+                    // Asignar venta al batch
+$sale->import_batch_id = $batch->id;
+$sale->save();
+
                     $created['sales']++;
 
                     // Create category if missing
@@ -241,6 +254,9 @@ class ImportSalesController extends Controller
                     // continue with other rows
                 }
             } // end foreach
+$batch->rows = $processed;
+$batch->status = 'completed';
+$batch->save();
 
             DB::commit();
 

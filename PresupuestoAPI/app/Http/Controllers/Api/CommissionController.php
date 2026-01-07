@@ -1,52 +1,36 @@
 <?php
-
 namespace App\Http\Controllers\Api;
-
 use App\Http\Controllers\Controller;
-use App\Models\Commission;
-use Illuminate\Http\Request;
+use App\Models\Sale;
+use App\Services\CommissionCalculator;
 
 class CommissionController extends Controller
 {
-    public function index(Request $request)
+    public function recalcSale($saleId, CommissionCalculator $calculator)
     {
-        $query = Commission::with(['sale', 'user'])
-            ->orderBy('id', 'desc');
+        $sale = Sale::with('user.userRoles')->findOrFail($saleId);
 
-        if ($request->has('from')) {
-            $query->whereHas('sale', fn($q) =>
-                $q->whereDate('sale_date', '>=', $request->from)
-            );
-        }
-
-        if ($request->has('to')) {
-            $query->whereHas('sale', fn($q) =>
-                $q->whereDate('sale_date', '<=', $request->to)
-            );
-        }
-
-        if ($request->pdv) {
-            $query->whereHas('sale', fn($q) =>
-                $q->where('pdv', $request->pdv)
-            );
-        }
+        $commission = $calculator->calculateForSale($sale);
 
         return response()->json([
-            'data' => $query->paginate(50)
+            'commission' => $commission
         ]);
     }
 
-    public function byUser($userId)
+    public function recalcUserMonth($userId, $month)
     {
-        $items = Commission::with(['sale'])
-            ->where('user_id', $userId)
-            ->orderBy('id','desc')
+        $sales = Sale::where('user_id', $userId)
+            ->whereMonth('created_at', $month)
             ->get();
 
-        return response()->json([
-            'user_id' => $userId,
-            'total' => $items->sum('commission_amount'),
-            'items' => $items
-        ]);
+        $calculator = app(CommissionCalculator::class);
+
+        $result = [];
+
+        foreach ($sales as $sale) {
+            $result[] = $calculator->calculateForSale($sale);
+        }
+
+        return response()->json($result);
     }
 }

@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
@@ -15,8 +16,25 @@ use Illuminate\Support\Facades\Log;
 
 class ImportSalesController extends Controller
 {
-    protected function normalizeHeader(string $h): string {
-        $h = preg_replace('/^\x{FEFF}/u','',$h);
+    /* =========================
+     * Helpers
+     * ========================= */
+    protected function logSkip(int $row, string $reason, array $assoc = [])
+    {
+        Log::warning('IMPORT SKIP', [
+            'row' => $row,
+            'reason' => $reason,
+            'folio' => $assoc['folio'] ?? null,
+            'pdv' => $assoc['pdv'] ?? null,
+            'seller' => $assoc['vendedor'] ?? $assoc['seller'] ?? $assoc['vendor'] ?? null,
+            'date' => $assoc['fecha'] ?? $assoc['date'] ?? null,
+            'raw' => $assoc,
+        ]);
+    }
+
+    protected function normalizeHeader(string $h): string
+    {
+        $h = preg_replace('/^\x{FEFF}/u', '', $h);
         $h = trim($h);
         $h = mb_strtolower($h);
         $h = preg_replace('/\s+/', ' ', $h);
@@ -25,8 +43,8 @@ class ImportSalesController extends Controller
         return trim($h, '_');
     }
 
-    // Regresa el primer campo no vacío
-    protected function firstNotEmpty(array $row, array $keys) {
+    protected function firstNotEmpty(array $row, array $keys)
+    {
         foreach ($keys as $k) {
             if (!isset($row[$k])) continue;
             $v = trim((string)$row[$k]);
@@ -35,21 +53,40 @@ class ImportSalesController extends Controller
         return null;
     }
 
+    protected function parseNumber($v)
+    {
+        if ($v === null) return null;
+        $s = trim((string)$v);
+        if ($s === '' || strtolower($s) === 'null') return null;
+
+        $s = str_replace([' ', "\u{00A0}"], '', $s);
+
+        if (strpos($s, ',') !== false && strpos($s, '.') !== false) {
+            $s = str_replace(',', '', $s);
+        } elseif (strpos($s, ',') !== false) {
+            $s = str_replace(',', '.', $s);
+        }
+
+        $s = preg_replace('/[^\d\.\-]/', '', $s);
+        return is_numeric($s) ? (float)$s : null;
+    }
+
+    /* =========================
+     * Import
+     * ========================= */
     public function import(Request $request)
     {
-        Log::info("IMPORT endpoint called");
+        Log::info('IMPORT SALES START');
 
         $request->validate(['file' => 'required|file']);
-
         $file = $request->file('file');
 
-        // ===== Crear o verificar BATCH (checksum) =====
-        $contents = file_get_contents($file->getRealPath());
-        $checksum = hash('sha256', $contents);
+        /* ===== Batch / checksum ===== */
+        $checksum = hash('sha256', file_get_contents($file->getRealPath()));
 
         if ($existing = ImportBatch::where('checksum', $checksum)->first()) {
             return response()->json([
-                'message' => 'Archivo ya importado anteriormente',
+                'message' => 'Archivo ya importado',
                 'batch_id' => $existing->id
             ], 409);
         }
@@ -61,160 +98,283 @@ class ImportSalesController extends Controller
             'rows' => 0,
         ]);
 
-        // ===== Leer archivo =====
+        /* ===== Load sheet ===== */
         try {
             $sheet = IOFactory::load($file->getRealPath())->getActiveSheet();
-            $rows = $sheet->toArray(null, true, true, true);
         } catch (\Throwable $e) {
-            $batch->update(['status'=>'failed','note'=>$e->getMessage()]);
-            return response()->json(['error'=>$e->getMessage()],500);
+            $batch->update(['status' => 'failed', 'note' => $e->getMessage()]);
+            return response()->json(['error' => $e->getMessage()], 500);
         }
 
-        if (count($rows) <= 1) {
-            $batch->update(['status'=>'failed','note'=>'Archivo vacío']);
-            return response()->json(['message'=>'Archivo vacío'],422);
+        /* ===== Headers (VALIDAR ANTES DE ENTRAR AL BUCLE) ===== */
+        $highestColumn = $sheet->getHighestColumn();
+        $headerRange = $sheet->rangeToArray(
+            'A1:' . $highestColumn . '1',
+            null, true, true, true
+        );
+
+        $headerRaw = $headerRange ? reset($headerRange) : false;
+
+        if (!$headerRaw || count(array_filter($headerRaw)) === 0) {
+            $batch->update([
+                'status' => 'failed',
+                'note'   => 'El archivo no contiene encabezados válidos en la fila 1'
+            ]);
+            return response()->json(['error' => 'El archivo no tiene encabezados válidos en la fila 1'], 422);
         }
 
-        // ===== Normalizar encabezados =====
-        $headerRaw = array_shift($rows);
         $headers = [];
         foreach ($headerRaw as $col => $value) {
-            $headers[$col] = $this->normalizeHeader($value ?? '');
+            $headers[$col] = $this->normalizeHeader((string)$value);
         }
 
+        /* ===== Counters ===== */
         $processed = 0;
-        $skipped = 0;
-        $errors = [];
-        $created = ['products'=>0, 'users'=>0, 'sales'=>0];
+        $skipped   = 0;
+        $created   = ['products' => 0, 'users' => 0, 'sales' => 0];
+        $errors    = [];
 
-        DB::beginTransaction();
-        try {
+        /* ===== Caches ===== */
+        $productsCache   = [];
+        $usersCache      = [];
+        $categoriesCache = [];
 
-            foreach ($rows as $index => $row) {
-                $rowNumber = $index + 2;
+        $chunkSize   = 500;
+        $highestRow  = $sheet->getHighestRow();
+        $salesBuffer = [];
 
-                try {
-                    // =======================
-                    // MAPEO DEL ROW
-                    // =======================
-                    $assoc = [];
-                    foreach ($row as $c => $val) {
-                        $key = $headers[$c] ?? null;
-                        if ($key) $assoc[$key] = trim((string)$val);
-                    }
-
-                    Log::info("ROW NORMALIZED: " . json_encode($assoc));
-
-                    // =======================
-                    // CAMPOS NECESARIOS
-                    // =======================
-                    $sellerName = $this->firstNotEmpty($assoc, ['vendedor','seller','vendor']);
-                    if (!$sellerName) { $skipped++; continue; }
-
-                    $productCode = $this->firstNotEmpty($assoc, ['codigo','product_code']);
-                    $upc = $this->firstNotEmpty($assoc, ['upc','upc1']);
-                    $description = $this->firstNotEmpty($assoc, ['descripcion','description']);
-                    $classification = $this->firstNotEmpty($assoc, ['clasificacion','classification']);
-
-                    $qty = floatval($this->firstNotEmpty($assoc, ['cantidad','qty']) ?? 0);
-                    $amount = floatval($this->firstNotEmpty($assoc, ['valor_en_pesos','total','valor_pesos']) ?? 0);
-
-                    $folio = $this->firstNotEmpty($assoc, ['folio']);
-                    $pdv = $this->firstNotEmpty($assoc, ['pdv']);
-
-                    $dateRaw = $this->firstNotEmpty($assoc, ['fecha','date']);
-                    $saleDate = $dateRaw ? Carbon::parse($dateRaw)->format('Y-m-d') : now()->toDateString();
-
-                    // =======================
-                    // PREVENIR DUPLICADOS
-                    // =======================
-                    if ($folio && $pdv) {
-                        $exists = Sale::where('folio', $folio)
-                            ->where('pdv', $pdv)
-                            ->whereDate('sale_date', $saleDate)
-                            ->exists();
-                        if ($exists) { $skipped++; continue; }
-                    }
-
-                    // =======================
-                    // CREAR / ACTUALIZAR PRODUCTO
-                    // =======================
-                    $product = Product::firstOrCreate(
-                        ['product_code' => $productCode, 'upc' => $upc],
-                        [
-                            'description' => $description,
-                            'brand' => $this->firstNotEmpty($assoc, ['brand','marca']),
-                            'classification' => $classification,
-                            'provider_code' => $this->firstNotEmpty($assoc,['codigo_proveedor']),
-                            'provider_name' => $this->firstNotEmpty($assoc,['proveedor','provider']),
-                        ]
-                    );
-
-                    if ($product->wasRecentlyCreated) $created['products']++;
-
-                    // =======================
-                    // CREAR / ENCONTRAR USUARIO VENDEDOR
-                    // =======================
-                    $seller = User::firstOrCreate(
-                        ['email' => Str::slug($sellerName).'@local'],
-                        ['name' => $sellerName]
-                    );
-
-                    if ($seller->wasRecentlyCreated) $created['users']++;
-
-                    // =======================
-                    // CREAR / ACTUALIZAR CATEGORÍA
-                    // =======================
-                    if ($classification) {
-                        Category::firstOrCreate(
-                            ['classification_code' => $classification],
-                            ['name' => $classification]
-                        );
-                    }
-
-                    // =======================
-                    // CREAR VENTA
-                    // =======================
-                    Sale::create([
-                        'import_batch_id' => $batch->id,
-                        'seller_id' => $seller->id,
-                        'product_id' => $product->id,
-                        'amount' => $amount,
-                        'quantity' => $qty,
-                        'folio' => $folio,
-                        'pdv' => $pdv,
-                        'sale_date' => $saleDate
-                    ]);
-
-                    $created['sales']++;
-                    $processed++;
-
-                } catch (\Throwable $ex) {
-                    Log::error("Error row {$rowNumber}: ".$ex->getMessage());
-                    $errors[] = ['row'=>$rowNumber,'error'=>$ex->getMessage()];
-                }
-            }
-
-            DB::commit();
-
-            $batch->update([
-                'status'=>'done',
-                'rows'=>$processed
-            ]);
-
-            return response()->json([
-                'message'=>'Importación completada',
-                'processed'=>$processed,
-                'skipped'=>$skipped,
-                'created'=>$created,
-                'errors'=>$errors,
-                'batch_id'=>$batch->id
-            ]);
-
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            $batch->update(['status'=>'failed','note'=>$e->getMessage()]);
-            return response()->json(['error'=>$e->getMessage()],500);
+        // DEFAULT SELLER ID fijo (usar tu ID ya creado)
+        $DEFAULT_SELLER_ID = 40;
+        // si quieres cachear el usuario por email, intenta cargarlo
+        $defaultSellerModel = User::find($DEFAULT_SELLER_ID);
+        if ($defaultSellerModel) {
+            $usersCache['no-seller@system.local'] = $defaultSellerModel;
         }
+
+        for ($start = 2; $start <= $highestRow; $start += $chunkSize) {
+
+            $end = min($start + $chunkSize - 1, $highestRow);
+            DB::beginTransaction();
+
+            try {
+
+                for ($row = $start; $row <= $end; $row++) {
+
+                    try {
+                        $range = $sheet->rangeToArray(
+                            "A{$row}:{$highestColumn}{$row}",
+                            null, true, true, true
+                        );
+
+                        $rowData = $range ? reset($range) : false;
+
+                        // Fila vacía o inválida: saltar
+                        if (!$rowData || count(array_filter($rowData)) === 0) {
+                            $skipped++;
+                            $this->logSkip($row, 'empty_row', $rowData ?: []);
+                            continue;
+                        }
+
+                        /* ===== Map ===== */
+                        $assoc = [];
+                        foreach ($rowData as $c => $v) {
+                            if (isset($headers[$c])) {
+                                $assoc[$headers[$c]] = trim((string)$v);
+                            }
+                        }
+
+                        /* ===== Seller (determinista, fallback al ID por defecto) ===== */
+                        $sellerName = $this->firstNotEmpty($assoc, [
+                            'vendedor', 'seller', 'vendor', 'vendedor_nombre', 'vendor_name'
+                        ]);
+
+                        if ($sellerName) {
+                            $email = Str::slug($sellerName) . '@local';
+
+                            if (!isset($usersCache[$email])) {
+                                $usersCache[$email] = User::firstOrCreate(
+                                    ['email' => strtolower($email)],
+                                    ['name' => $sellerName]
+                                );
+                                if ($usersCache[$email]->wasRecentlyCreated) {
+                                    $created['users']++;
+                                }
+                            }
+
+                            $sellerId = $usersCache[$email]->id;
+                        } else {
+                            // Fallback: usar ID fijo
+                            $sellerId = $DEFAULT_SELLER_ID;
+
+                            // Log informativo (no crítico)
+                            Log::info('IMPORT: seller fallback to SIN VENDEDOR', [
+                                'row' => $row,
+                                'seller_id' => $DEFAULT_SELLER_ID,
+                                'folio' => $assoc['folio'] ?? null
+                            ]);
+                        }
+
+                        /* ===== Date ===== */
+                        $dateRaw = $this->firstNotEmpty($assoc, ['fecha', 'date']);
+                        try {
+                            if ($dateRaw) {
+                                // tratar formatos comunes robustamente
+                                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateRaw)) {
+                                    $saleDate = Carbon::createFromFormat('Y-m-d', $dateRaw)->toDateString();
+                                } elseif (preg_match('/^\d{1,2}\/\d{1,2}\/\d{4}$/', $dateRaw)) {
+                                    [$a, $b, $y] = explode('/', $dateRaw);
+                                    if ((int)$a > 12) {
+                                        $saleDate = Carbon::createFromFormat('d/m/Y', $dateRaw)->toDateString();
+                                    } else {
+                                        $saleDate = Carbon::createFromFormat('m/d/Y', $dateRaw)->toDateString();
+                                    }
+                                } else {
+                                    $saleDate = Carbon::parse($dateRaw)->toDateString();
+                                }
+                            } else {
+                                $saleDate = now()->toDateString();
+                            }
+                        } catch (\Throwable $e) {
+                            $saleDate = now()->toDateString();
+                        }
+
+                        /* ===== Amounts ===== */
+                        $qty = $this->parseNumber($this->firstNotEmpty($assoc, ['cantidad', 'qty', 'quantity'])) ?? 0;
+
+                        $valorPesos = $this->parseNumber(
+                            $this->firstNotEmpty($assoc, ['valor_en_pesos', 'value_pesos', 'valor_pesos', 'total'])
+                        );
+
+                        $valorUsd = $this->parseNumber(
+                            $this->firstNotEmpty($assoc, ['valor_dolares', 'value_usd', 'valor_usd'])
+                        );
+
+                        $trm = $this->parseNumber(
+                            $this->firstNotEmpty($assoc, ['t_cambio_costo'])
+                        );
+
+                        $amountCop = $valorPesos ?? (($valorUsd && $trm) ? round($valorUsd * $trm, 2) : 0);
+
+                        /* ===== Folio / PDV (guardamos pero no bloqueamos por duplicado) ===== */
+                        $folio = $this->firstNotEmpty($assoc, ['folio']);
+                        $pdv   = $this->firstNotEmpty($assoc, ['pdv']);
+
+                        /* ===== Product (cache) ===== */
+                        $productKey = ($this->firstNotEmpty($assoc, ['codigo', 'product_code']) ?? 'x')
+                            . '|' . ($this->firstNotEmpty($assoc, ['upc', 'upc1']) ?? 'x');
+
+                           /* ===== Classification (SIN UNIFICAR) ===== */
+                        $classificationRaw = $this->firstNotEmpty($assoc, ['clasificacion', 'classification']);
+                        $classificationNorm = $classificationRaw !== null
+                            ? trim((string)$classificationRaw)
+                            : null;
+
+
+                        if (!isset($productsCache[$productKey])) {
+                            $productsCache[$productKey] = Product::firstOrCreate(
+                                [
+                                    'product_code' => $this->firstNotEmpty($assoc, ['codigo', 'product_code']),
+                                    'upc'          => $this->firstNotEmpty($assoc, ['upc', 'upc1']),
+                                ],
+                                [
+                                    'description'        => $this->firstNotEmpty($assoc, ['descripcion', 'description']),
+                                    'classification'     => $classificationNorm,
+                                    'classification_desc'=> $this->firstNotEmpty($assoc, ['descripcion_clasificacion', 'classification_desc']),
+                                    'brand'              => $this->firstNotEmpty($assoc, ['brand', 'marca']),
+                                    'currency'           => $this->firstNotEmpty($assoc, ['moneda', 'currency']),
+                                ]
+                            );
+                            if ($productsCache[$productKey]->wasRecentlyCreated) {
+                                $created['products']++;
+                            }
+                        }
+                        $product = $productsCache[$productKey];
+
+                        /* ===== Category (cache) ===== */
+                        $classificationForCategory = $classificationNorm ?? $this->firstNotEmpty($assoc, ['clasificacion', 'classification']);
+
+                        $categoryKey = null;
+                        if ($classificationForCategory !== null) {
+                            $categoryKey = (string) $classificationForCategory;
+                            $categoryKey = mb_strtolower(trim($categoryKey));
+                        }
+
+                        if ($categoryKey && !isset($categoriesCache[$categoryKey])) {
+                            $categoriesCache[$categoryKey] = Category::firstOrCreate(
+                                ['classification_code' => $categoryKey],
+                                [
+                                    'name' => $this->firstNotEmpty($assoc, ['descripcion_clasificacion', 'classification_desc']) ?? $categoryKey,
+                                    'description' => $this->firstNotEmpty($assoc, ['descripcion_clasificacion', 'classification_desc']),
+                                ]
+                            );
+                        }
+
+                        /* ===== Buffer sale ===== */
+                        $salesBuffer[] = [
+                            'import_batch_id' => $batch->id,
+                            'seller_id' => $sellerId,
+                            'product_id' => $product->id,
+                            'sale_date'  => $saleDate,
+                            'amount'     => $amountCop,
+                            'amount_cop' => $amountCop,
+                            'value_pesos'=> $valorPesos,
+                            'value_usd'  => $valorUsd,
+                            'exchange_rate'=>$trm,
+                            'currency'   => $this->firstNotEmpty($assoc, ['moneda', 'currency']),
+                            'quantity'   => $qty,
+                            'folio'      => $folio,
+                            'pdv'        => $pdv,
+                            'cashier'    => $this->firstNotEmpty($assoc, ['cajero', 'cashier']),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ];
+
+                        if (count($salesBuffer) >= 500) {
+                            Sale::insert($salesBuffer);
+                            $created['sales'] += count($salesBuffer);
+                            $salesBuffer = [];
+                        }
+
+                        $processed++;
+
+                    } catch (\Throwable $rowEx) {
+                        $skipped++;
+                        $errors[] = ['row' => $row, 'error' => $rowEx->getMessage()];
+                        Log::error("Row {$row} error: " . $rowEx->getMessage(), [
+                            'trace' => $rowEx->getTraceAsString(),
+                            'data' => $assoc ?? null
+                        ]);
+                    }
+                }
+
+                if ($salesBuffer) {
+                    Sale::insert($salesBuffer);
+                    $created['sales'] += count($salesBuffer);
+                    $salesBuffer = [];
+                }
+
+                DB::commit();
+
+            } catch (\Throwable $e) {
+                DB::rollBack();
+                Log::error("Chunk {$start}-{$end} failed: " . $e->getMessage());
+                $errors[] = ['chunk' => "{$start}-{$end}", 'error' => $e->getMessage()];
+                // no hacemos continue; seguimos con el siguiente chunk
+            }
+        }
+
+        $batch->update([
+            'status' => 'done',
+            'rows' => $processed
+        ]);
+
+        return response()->json([
+            'message' => 'Importación completada',
+            'processed' => $processed,
+            'skipped' => $skipped,
+            'created' => $created,
+            'errors' => $errors,
+            'batch_id' => $batch->id
+        ]);
     }
 }
