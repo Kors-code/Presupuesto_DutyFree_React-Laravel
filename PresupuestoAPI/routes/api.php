@@ -61,13 +61,14 @@ Route::prefix('v1')->group(function () {
     Route::delete('commissions/categories/{id}', [CategoryCommissionController::class, 'destroy']);
     Route::post('commissions/categories/bulk', [CategoryCommissionController::class, 'bulkUpdate']);
     
-    Route::post('/commissions/generate', [CommissionActionController::class, 'generate']);
+    Route::post('/commissions/generate', [CommissionController::class, 'generate']);
     // Budget 
     
     Route::get('/budgets', [BudgetController::class, 'index']);
     Route::post('/budgets', [BudgetController::class, 'store']);
     Route::get('/budgets/active', [BudgetController::class, 'active']);
     Route::get('/budgets/progress/daily', [BudgetProgressController::class, 'daily']);
+
 
 
 

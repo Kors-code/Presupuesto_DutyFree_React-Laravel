@@ -1,36 +1,28 @@
 <?php
 namespace App\Http\Controllers\Api;
+
 use App\Http\Controllers\Controller;
-use App\Models\Sale;
-use App\Services\CommissionCalculator;
+use Illuminate\Http\Request;
+use App\Services\CommissionService;
 
 class CommissionController extends Controller
 {
-    public function recalcSale($saleId, CommissionCalculator $calculator)
+    protected CommissionService $svc;
+    public function __construct(CommissionService $svc)
     {
-        $sale = Sale::with('user.userRoles')->findOrFail($saleId);
+        $this->svc = $svc;
+    }
 
-        $commission = $calculator->calculateForSale($sale);
-
-        return response()->json([
-            'commission' => $commission
+    // POST /api/commissions/generate?month=YYYY-MM or ?budget_id=ID
+    public function generate(Request $request, CommissionService $service)
+    {
+        $request->validate([
+            'budget_id' => 'required|exists:budgets,id'
         ]);
+
+        return response()->json(
+            $service->generateForBudget($request->budget_id)
+        );
     }
 
-    public function recalcUserMonth($userId, $month)
-    {
-        $sales = Sale::where('user_id', $userId)
-            ->whereMonth('created_at', $month)
-            ->get();
-
-        $calculator = app(CommissionCalculator::class);
-
-        $result = [];
-
-        foreach ($sales as $sale) {
-            $result[] = $calculator->calculateForSale($sale);
-        }
-
-        return response()->json($result);
-    }
 }

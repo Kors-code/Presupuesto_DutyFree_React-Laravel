@@ -19,9 +19,11 @@ type SaleRow = {
 
 export default function CommissionDetailModal({
   userId,
+  budgetId,
   onClose
 }: {
   userId: number;
+  budgetId: number;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -36,13 +38,16 @@ export default function CommissionDetailModal({
   const [search, setSearch] = useState('');
   const [categoryView, setCategoryView] = useState<'cards' | 'table'>('cards');
 
-  useEffect(() => { load(); }, [userId]);
+useEffect(() => {
+  if (userId && budgetId) load();
+}, [userId, budgetId]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.get(`commissions/by-seller/${userId}`);
+      const res = await api.get(`commissions/by-seller/${userId}?budget_id=${budgetId}`);
       const d = res.data || {};
+      console.log('API categories:', d.categories);
       setSales(d.sales || []);
       setCategories(d.categories || []);
       setTotals(d.totals || {});

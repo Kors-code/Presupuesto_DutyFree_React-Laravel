@@ -44,22 +44,68 @@ export default function CommissionCardsPage() {
   const [rows, setRows] = useState<SellerRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<number | null>(null);
+
   const [roleFilter, setRoleFilter] = useState<string>('');
   const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards');
   const [sortBy, setSortBy] = useState<'sales_cop' | 'sales_usd' | 'commission_cop' | 'name'>('sales_cop');
   const [query, setQuery] = useState<string>('');
   const [showCategories, setShowCategories] = useState<boolean>(true);
 
-  useEffect(() => { load(); }, [roleFilter]);
+  // budgets & selection
+  const [budgetId, setBudgetId] = useState<number | null>(null);
+  const [budgets, setBudgets] = useState<any[]>([]);
+
+  // month control (keeps backwards compatibility if you prefer month-based)
+  const [month, setMonth] = useState<string>(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  // initial budgets load
+  useEffect(() => {
+    let mounted = true;
+    api.get('/budgets')
+      .then(res => {
+        if (!mounted) return;
+        const data = res.data || [];
+        setBudgets(Array.isArray(data) ? data : []);
+        if (Array.isArray(data) && data.length > 0 && !budgetId) {
+          setBudgetId(data[0].id);
+        }
+      })
+      .catch(err => {
+        console.error('Error loading budgets', err);
+      });
+    return () => { mounted = false; };
+  }, []);
+
+  // auto-load when budget/month/role change
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleFilter, budgetId, month]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const q = roleFilter ? `?role_name=${encodeURIComponent(roleFilter)}` : '';
-      const res = await api.get(`commissions/by-seller${q}`);
+      const params = new URLSearchParams();
+      if (roleFilter) params.set('role_name', roleFilter);
+
+      // prefer budget_id if selected
+      if (budgetId) {
+        params.set('budget_id', String(budgetId));
+      } else if (month) {
+        params.set('month', month);
+      }
+
+      const url = `commissions/by-seller?${params.toString()}`;
+      const res = await api.get(url);
+
       if (res.data?.active) {
-        setRows(res.data.sellers || []);
-        setBudgetProgress(res.data.progress || {});
+        // backend returns 'sellers' or 'rows' depending on implementation; adapt
+        const sellers = res.data.sellers ?? res.data.rows ?? [];
+        setRows(Array.isArray(sellers) ? sellers : []);
+        setBudgetProgress(res.data.progress ?? res.data.budget_progress ?? {});
         const cats = res.data.categories_summary ?? res.data.categories_summary_global ?? [];
         setCategoriesSummaryGlobal(Array.isArray(cats) ? cats : []);
       } else {
@@ -78,12 +124,21 @@ export default function CommissionCardsPage() {
   };
 
   const onGenerate = async () => {
-    if (!confirm('¿Deseas generar/actualizar las comisiones del periodo activo?')) return;
+    if (!confirm('¿Deseas generar/actualizar las comisiones del presupuesto/mes seleccionado?')) return;
     try {
-      const res = await api.post('commissions/generate');
-      alert(res.data.is_provisional ? `Provisionales: ${res.data.created}` : `Definitivas: ${res.data.created}`);
-      load();
+      const params = new URLSearchParams();
+      if (budgetId) params.set('budget_id', String(budgetId));
+      else if (month) params.set('month', month);
+
+      const res = await api.post(`commissions/generate?${params.toString()}`);
+      if (res.data?.status === 'ok') {
+        alert(`Comisiones procesadas: creadas ${res.data.created} — actualizadas ${res.data.updated}`);
+      } else {
+        alert('Resultado: ' + JSON.stringify(res.data));
+      }
+      await load();
     } catch (err) {
+      console.error(err);
       alert('Error al generar comisiones');
     }
   };
@@ -126,6 +181,38 @@ export default function CommissionCardsPage() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
+      {/* selector row */}
+      <div className="flex flex-wrap gap-3 items-center mb-4">
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">Presupuesto:</label>
+          <select
+            value={budgetId ?? ''}
+            onChange={e => setBudgetId(e.target.value ? Number(e.target.value) : null)}
+            className="border rounded px-2 py-1 text-sm"
+          >
+            <option value="">(Usar mes)</option>
+            {budgets.map(b => (
+              <option key={b.id} value={b.id}>{b.name} — {b.start_date} → {b.end_date}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-gray-500">Mes (YYYY-MM):</label>
+          <input
+            type="month"
+            value={month}
+            onChange={e => setMonth(e.target.value)}
+            className="border rounded px-2 py-1 text-sm"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 ml-auto">
+          <button onClick={load} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm">Cargar</button>
+          <button onClick={onGenerate} className="px-3 py-1 bg-green-600 text-white rounded text-sm">Generar/Confirmar</button>
+        </div>
+      </div>
+
       {/* top strip */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 items-start">
         <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -182,7 +269,7 @@ export default function CommissionCardsPage() {
         </div>
       </div>
 
-      {/* CATEGORÍAS: Totales por categoría */}
+      {/* CATEGORÍAS */}
       {showCategories && (
         <div className="mb-6 bg-white rounded shadow overflow-x-auto">
           <div className="p-3 border-b">
@@ -223,7 +310,7 @@ export default function CommissionCardsPage() {
                   <td className="p-2 text-right">{moneyCOP(Number(c.sales_cop ?? 0))}</td>
                   <td className="p-2 text-right">{c.pct_of_category === null || typeof c.pct_of_category === 'undefined' ? '—' : `${Number(c.pct_of_category).toFixed(2)}%`}</td>
                   <td className="p-2 text-right">{c.qualifies ? 'Sí' : 'No'}</td>
-                  <td className="p-2 text-right">{(c.applied_commission_pct ?? c.applied_commission_pct === 0 ? c.applied_commission_pct : (c.applied_commission_pct ?? c.applied_commission_pct)) ? `${Number(c.applied_commission_pct ?? 0).toFixed(2)}%` : '—'}</td>
+                  <td className="p-2 text-right">{(typeof c.applied_commission_pct !== 'undefined' && c.applied_commission_pct !== null) ? `${Number(c.applied_commission_pct).toFixed(2)}%` : '—'}</td>
                   <td className="p-2 text-right">{c.projected_commission_usd ? moneyUSD(Number(c.projected_commission_usd)) : (c.commission_usd ? moneyUSD(Number(c.commission_usd)) : '—')}</td>
                   <td className="p-2 text-right">{moneyCOP(Number(c.commission_cop ?? 0))}</td>
                 </tr>
@@ -233,6 +320,7 @@ export default function CommissionCardsPage() {
         </div>
       )}
 
+      {/* SELLERS */}
       {loading ? <div className="p-6">Cargando…</div> : displayedRows.length === 0 ? <div className="p-6 text-gray-600">No hay datos</div> : (
         viewMode === 'cards' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -300,7 +388,7 @@ export default function CommissionCardsPage() {
         )
       )}
 
-      {selected && <CommissionDetailModal userId={selected} onClose={() => { setSelected(null); load(); }} />}
+      {selected && <CommissionDetailModal userId={selected} budgetId={budgetId} onClose={() => { setSelected(null); load(); }} />}
     </div>
   );
 }

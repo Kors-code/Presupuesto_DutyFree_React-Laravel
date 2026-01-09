@@ -151,6 +151,26 @@ class ImportSalesController extends Controller
             $usersCache['no-seller@system.local'] = $defaultSellerModel;
         }
 
+        /**
+         * TRM handling:
+         * - $trmFromExcelByDate acumula la última TRM vista por fecha mientras iteramos
+         * - $trmCache memoiza queries a la tabla trms (last <= date)
+         */
+        $trmFromExcelByDate = []; // ['YYYY-MM-DD' => float]
+        $trmCache = []; // cache for DB fallback (date => float|null)
+
+        $possibleTrmHeaders = [ 'tipo_de_cambio', 'tipo_cambio', 'tasa_cambio', 't_cambio', 'trm'];
+
+        $getTrmForDate = function (string $date) use (&$trmCache) {
+            if (array_key_exists($date, $trmCache)) return $trmCache[$date];
+            $v = DB::table('trms')
+                ->where('date', '<=', $date)
+                ->orderBy('date', 'desc')
+                ->value('value');
+            $trmCache[$date] = $v !== null ? (float)$v : null;
+            return $trmCache[$date];
+        };
+
         for ($start = 2; $start <= $highestRow; $start += $chunkSize) {
 
             $end = min($start + $chunkSize - 1, $highestRow);
@@ -249,11 +269,27 @@ class ImportSalesController extends Controller
                             $this->firstNotEmpty($assoc, ['valor_dolares', 'value_usd', 'valor_usd'])
                         );
 
-                        $trm = $this->parseNumber(
-                            $this->firstNotEmpty($assoc, ['t_cambio_costo'])
-                        );
+                        // TRM from Excel (if present in any of possible headers)
+                        $trmExcel = null;
+                        foreach ($possibleTrmHeaders as $h) {
+                            $candidate = $this->firstNotEmpty($assoc, [$h]);
+                            if ($candidate !== null) {
+                                $trmExcel = $this->parseNumber($candidate);
+                                break;
+                            }
+                        }
 
-                        $amountCop = $valorPesos ?? (($valorUsd && $trm) ? round($valorUsd * $trm, 2) : 0);
+                        // Keep last TRM per date from the Excel: the last row seen for that date overwrites previous
+                        if ($trmExcel !== null) {
+                            $trmFromExcelByDate[$saleDate] = $trmExcel;
+                        }
+
+                        // Determine TRM to use for calculation:
+                        // prefer the TRM from the Excel buffer if present; otherwise fallback to DB (last <= date)
+                        $trmToUse = $trmFromExcelByDate[$saleDate] ?? $getTrmForDate($saleDate);
+
+                        // Compute amount: same behavior as original but using trmToUse
+                        $amountCop = $valorPesos ?? (($valorUsd && $trmToUse) ? round($valorUsd * $trmToUse, 2) : 0);
 
                         /* ===== Folio / PDV (guardamos pero no bloqueamos por duplicado) ===== */
                         $folio = $this->firstNotEmpty($assoc, ['folio']);
@@ -263,7 +299,7 @@ class ImportSalesController extends Controller
                         $productKey = ($this->firstNotEmpty($assoc, ['codigo', 'product_code']) ?? 'x')
                             . '|' . ($this->firstNotEmpty($assoc, ['upc', 'upc1']) ?? 'x');
 
-                           /* ===== Classification (SIN UNIFICAR) ===== */
+                        /* ===== Classification (SIN UNIFICAR) ===== */
                         $classificationRaw = $this->firstNotEmpty($assoc, ['clasificacion', 'classification']);
                         $classificationNorm = $classificationRaw !== null
                             ? trim((string)$classificationRaw)
@@ -319,7 +355,7 @@ class ImportSalesController extends Controller
                             'amount_cop' => $amountCop,
                             'value_pesos'=> $valorPesos,
                             'value_usd'  => $valorUsd,
-                            'exchange_rate'=>$trm,
+                            'exchange_rate'=> $trmToUse, // trm used (may be null)
                             'currency'   => $this->firstNotEmpty($assoc, ['moneda', 'currency']),
                             'quantity'   => $qty,
                             'folio'      => $folio,
@@ -360,6 +396,23 @@ class ImportSalesController extends Controller
                 Log::error("Chunk {$start}-{$end} failed: " . $e->getMessage());
                 $errors[] = ['chunk' => "{$start}-{$end}", 'error' => $e->getMessage()];
                 // no hacemos continue; seguimos con el siguiente chunk
+            }
+        }
+
+        /* =========================
+         * Insert TRMs discovered in the Excel into DB (one per day)
+         * Use ON DUPLICATE KEY to avoid duplicates. The TRM buffer holds the last TRM per date
+         * ========================= */
+        foreach ($trmFromExcelByDate as $date => $trmValue) {
+            try {
+                DB::statement(
+                    "INSERT INTO trms (`date`,`value`,`created_at`,`updated_at`) VALUES (?, ?, NOW(), NOW())
+                     ON DUPLICATE KEY UPDATE id = id",
+                    [$date, $trmValue]
+                );
+            } catch (\Throwable $e) {
+                Log::warning("No se pudo insertar TRM para {$date}: " . $e->getMessage());
+                $errors[] = ['trm_insert' => $date, 'error' => $e->getMessage()];
             }
         }
 

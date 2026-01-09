@@ -1,43 +1,64 @@
 import api from '../../../api/axios';
 
+/* =========================
+ * ROLES
+ * ========================= */
 export const getRoles = async () => {
-    // devuelve array de roles: [{id, name}, ...]
-    const { data } = await api.get('/roles');
-    // data puede ser el array o un objeto con data.roles -> normalize
-    if (Array.isArray(data)) return data;
-    if (Array.isArray(data?.roles)) return data.roles;
-    if (Array.isArray(data?.data)) return data.data;
-    return []; // fallback seguro
+  const res = await api.get('/roles');
+  return res.data?.roles ?? res.data ?? [];
 };
 
-export const getCategoriesWithCommission = async (roleId: number) => {
-    // backend devuelve { categories: [...] }
-    const { data } = await api.get('/commissions/categories', { params: { role_id: roleId } });
-    // normalize a { categories: [] }
-    if (data?.categories && Array.isArray(data.categories)) {
-        return { categories: data.categories };
-    }
-    // si backend devolviera array directo
-    if (Array.isArray(data)) return { categories: data };
-    return { categories: [] };
+/* =========================
+ * BUDGETS  ✅ (ESTO FALTABA)
+ * ========================= */
+export const getBudgets = async () => {
+  const res = await api.get('/budgets');
+  // ajusta si tu backend devuelve otra estructura
+  return res.data?.budgets ?? res.data ?? [];
+};
+
+/* =========================
+ * CATEGORY COMMISSIONS
+ * ========================= */
+export const getCategoriesWithCommission = async (
+  roleId: number,
+  budgetId?: number
+) => {
+  const params = new URLSearchParams();
+  params.set('role_id', String(roleId));
+  if (budgetId) params.set('budget_id', String(budgetId));
+
+  const res = await api.get(
+    `/commissions/categories?${params.toString()}`
+  );
+
+  return res.data;
 };
 
 export const upsertCategoryCommission = async (payload: {
-    category_id: number;
-    role_id: number;
-    commission_percentage: number;
-    min_pct_to_qualify?: number;
+  category_id: number;
+  role_id: number;
+  commission_percentage: number;
+  commission_percentage100?: number;
+  commission_percentage120?: number;
+  min_pct_to_qualify?: number;
 }) => {
-    const { data } = await api.post('/commissions/categories', payload);
-    return data;
+  const res = await api.post('/commissions/categories', payload);
+  return res.data;
+};
+
+export const bulkSaveCategoryCommissions = async (
+  roleId: number,
+  items: any[]
+) => {
+  const res = await api.post('/commissions/categories/bulk', {
+    role_id: roleId,
+    items
+  });
+  return res.data;
 };
 
 export const deleteCategoryCommission = async (id: number) => {
-    const { data } = await api.delete(`commissions/categories/${id}`);
-    return data;
-};
-
-export const bulkSaveCategoryCommissions = async (roleId: number, items: Array<{ category_id: number, commission_percentage: number, min_pct_to_qualify?: number }>) => {
-    const { data } = await api.post('/commissions/categories/bulk', { role_id: roleId, items });
-    return data;
+  const res = await api.delete(`/commissions/categories/${id}`);
+  return res.data;
 };
