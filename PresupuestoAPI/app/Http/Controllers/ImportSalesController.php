@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\Sale;
 use App\Models\Category;
 use App\Models\ImportBatch;
+use App\Models\UserRole;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
@@ -70,6 +71,23 @@ class ImportSalesController extends Controller
         $s = preg_replace('/[^\d\.\-]/', '', $s);
         return is_numeric($s) ? (float)$s : null;
     }
+    protected function normalizePersonName(?string $name): ?string
+    {
+        if (!$name) return null;
+
+        $name = mb_strtolower($name);
+        $name = trim($name);
+
+        // quitar tildes
+        $name = iconv('UTF-8', 'ASCII//TRANSLIT', $name);
+
+        // quitar todo lo que no sea letra
+        $name = preg_replace('/[^a-z]+/', '', $name);
+
+        return $name ?: null;
+    }
+
+
 
     /* =========================
      * Import
@@ -171,6 +189,12 @@ class ImportSalesController extends Controller
             return $trmCache[$date];
         };
 
+        // user_id => [ 'YYYY-MM-DD' => true|false ]
+        // true = en algún momento del día fue cajero
+        $dailyCashierMatch = [];
+
+
+
         for ($start = 2; $start <= $highestRow; $start += $chunkSize) {
 
             $end = min($start + $chunkSize - 1, $highestRow);
@@ -211,15 +235,29 @@ class ImportSalesController extends Controller
                         if ($sellerName) {
                             $email = Str::slug($sellerName) . '@local';
 
+                            $codigoVendedor = $this->firstNotEmpty($assoc, [
+                                'codigo_vendedor',
+                                'codigovendedor',
+                                'seller_code',
+                                'codigo'
+                            ]);
+
+                            $email = strtolower(Str::slug($sellerName) . '@local');
+
                             if (!isset($usersCache[$email])) {
-                                $usersCache[$email] = User::firstOrCreate(
-                                    ['email' => strtolower($email)],
-                                    ['name' => $sellerName]
+                                $usersCache[$email] = User::updateOrCreate(
+                                    ['email' => $email],                 // 🔑 clave única
+                                    [
+                                        'name' => $sellerName,
+                                        'codigo_vendedor' => $codigoVendedor
+                                    ]
                                 );
+
                                 if ($usersCache[$email]->wasRecentlyCreated) {
                                     $created['users']++;
                                 }
                             }
+
 
                             $sellerId = $usersCache[$email]->id;
                         } else {
@@ -257,6 +295,37 @@ class ImportSalesController extends Controller
                         } catch (\Throwable $e) {
                             $saleDate = now()->toDateString();
                         }
+                        $cashierName = $this->firstNotEmpty($assoc, ['cajero', 'cashier']);
+
+                        $normSeller  = $this->normalizePersonName($sellerName);
+                        $normCashier = $this->normalizePersonName($cashierName);
+
+
+                        if ($normSeller && $normCashier) {
+                            Log::info('ROLE CHECK', [
+                                'seller_raw' => $sellerName,
+                                'cashier_raw' => $cashierName,
+                                'seller_norm' => $normSeller,
+                                'cashier_norm' => $normCashier,
+                                'match' => $normSeller === $normCashier,
+                            ]);
+                        }
+
+                        // inicializar estructuras
+                        if (!isset($dailyCashierMatch[$sellerId])) {
+                            $dailyCashierMatch[$sellerId] = [];
+                        }
+                        if (!isset($dailyCashierMatch[$sellerId][$saleDate])) {
+                            $dailyCashierMatch[$sellerId][$saleDate] = false;
+                        }
+
+                        // REGLA CLAVE:
+                        // si alguna vez en el día coincide → marcar true
+                        if ($normSeller && $normCashier && $normSeller === $normCashier) {
+                            $dailyCashierMatch[$sellerId][$saleDate] = true;
+                        }
+
+
 
                         /* ===== Amounts ===== */
                         $qty = $this->parseNumber($this->firstNotEmpty($assoc, ['cantidad', 'qty', 'quantity'])) ?? 0;
@@ -416,6 +485,41 @@ class ImportSalesController extends Controller
             }
         }
 
+        $rolesMap = DB::table('roles')->pluck('id', 'name');
+
+        $rolesMap = DB::table('roles')->pluck('id', 'name');
+
+        foreach ($dailyCashierMatch as $userId => $dates) {
+            foreach ($dates as $date => $wasCashier) {
+
+                // DECISIÓN FINAL DEL ROL
+                $roleName = $wasCashier ? 'cajero' : 'vendedor';
+                $roleId = $rolesMap[$roleName] ?? null;
+
+                if (!$roleId) {
+                    Log::warning("Rol '{$roleName}' no existe", [
+                        'user_id' => $userId,
+                        'date' => $date
+                    ]);
+                    continue;
+                }
+
+                // 1 rol por usuario y día
+                 UserRole::updateOrCreate(
+                [
+                    'user_id'    => $userId,
+                    'start_date' => $date,
+                ],
+                [
+                    'role_id'   => $roleId,
+                    'end_date'  => null,
+                ]
+                );
+            }
+        }
+
+
+
         $batch->update([
             'status' => 'done',
             'rows' => $processed
@@ -429,5 +533,36 @@ class ImportSalesController extends Controller
             'errors' => $errors,
             'batch_id' => $batch->id
         ]);
+    }
+
+     public function bulkDestroy(Request $request)
+    {
+        $request->validate([
+            'ids' => 'required|array|min:1',
+            'ids.*' => 'integer|distinct|exists:import_batches,id',
+        ]);
+
+        $ids = $request->input('ids');
+
+        DB::beginTransaction();
+        try {
+            $batches = ImportBatch::whereIn('id', $ids)->get();
+
+            foreach ($batches as $batch) {
+                if (method_exists($batch, 'sales')) {
+                    $batch->sales()->delete();
+                }
+                if ($batch->path && \Storage::exists($batch->path)) {
+                    \Storage::delete($batch->path);
+                }
+                $batch->delete();
+            }
+
+            DB::commit();
+            return response()->json(['message' => 'Batches eliminados', 'deleted' => count($ids)]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return response()->json(['message' => 'Error eliminando batches', 'error' => $e->getMessage()], 500);
+        }
     }
 }

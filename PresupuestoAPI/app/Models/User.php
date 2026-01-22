@@ -6,34 +6,68 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class User extends Authenticatable
 {
-    protected $fillable = ['name','email','role'];
+    protected $fillable = [
+        'name',
+        'email',
+        'codigo_vendedor'
+    ];
 
-    // ventas donde es seller (seller_id FK)
+    /**
+     * Ventas donde el usuario actúa como vendedor
+     * FK real: sales.seller_id
+     */
     public function salesAsSeller(): HasMany
     {
         return $this->hasMany(Sale::class, 'seller_id', 'id');
     }
 
-    public function userRoles()
-{
-    return $this->hasMany(\App\Models\UserRole::class);
-}
-
-    // ventas donde aparece como cajero (sales.cashier es texto con el nombre)
-    public function salesAsCashier(): HasMany
+    /**
+     * Roles históricos del usuario
+     * FK real: user_roles.user_id
+     */
+    public function userRoles(): HasMany
     {
-        // foreign key in sales = 'cashier' (text), local key in users = 'name'
-        return $this->hasMany(Sale::class, 'cashier', 'name');
+        return $this->hasMany(UserRole::class, 'user_id');
     }
 
-    public function roles() { return $this->hasMany(UserRole::class, 'user_id'); }
+    /**
+     * Alias explícito (si prefieres usar roles())
+     */
+    public function roles(): HasMany
+    {
+        return $this->userRoles();
+    }
 
-    public function roleAtDate($date = null) {
+    /**
+     * Rol vigente en una fecha dada
+     */
+    public function roleAtDate(?string $date = null)
+    {
         $date = $date ?? now()->toDateString();
-        return $this->roles()
-            ->where('start_date','<=',$date)
-            ->where(function($q) use ($date) { $q->where('end_date','>=',$date)->orWhereNull('end_date'); })
+
+        return $this->userRoles()
+            ->where('start_date', '<=', $date)
+            ->where(function ($q) use ($date) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $date);
+            })
             ->with('role')
+            ->orderBy('start_date', 'desc')
             ->first();
     }
+    public function roleBudgets()
+{
+    return $this->hasMany(UserRoleBudget::class, 'user_id');
+}
+
+
+    /**
+     * ❌ NO hay relación salesAsCashier
+     *
+     * sales.cashier es TEXTO, no FK.
+     * Cualquier análisis de cajeros debe hacerse:
+     * - por import
+     * - por reportes
+     * - o por lógica explícita
+     */
 }

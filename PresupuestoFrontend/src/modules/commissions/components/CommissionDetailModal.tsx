@@ -3,19 +3,21 @@ import api from '../../../api/axios';
 
 /* ================= TYPES ================= */
 type SaleRow = {
-  commission_id: number;
   sale_date: string;
   folio: string;
-  pdv: string;
   product: string;
   amount_cop: number;
   value_usd: number;
-  exchange_rate: number | null;
-  commission_amount: number;
-  is_provisional: boolean;
+  exchange_rate?: number | null;
+
+  // ⚠️ ahora es calculado en frontend
+  commission_amount?: number;
+
+  is_provisional?: boolean;
   category_code?: string;
-  category_desc?: string;
 };
+
+
 
 export default function CommissionDetailModal({
   userId,
@@ -37,6 +39,10 @@ export default function CommissionDetailModal({
   const [filterCat, setFilterCat] = useState<string>('ALL');
   const [search, setSearch] = useState('');
   const [categoryView, setCategoryView] = useState<'cards' | 'table'>('cards');
+  const [assignedTurns, setAssignedTurns] = useState<number>(0); // backend
+  const [editedTurns, setEditedTurns] = useState<number>(0);     // input
+  const [savingTurns, setSavingTurns] = useState(false);
+
 
 useEffect(() => {
   if (userId && budgetId) load();
@@ -48,12 +54,42 @@ useEffect(() => {
       const res = await api.get(`commissions/by-seller/${userId}?budget_id=${budgetId}`);
       const d = res.data || {};
       console.log('API categories:', d.categories);
-      setSales(d.sales || []);
       setCategories(d.categories || []);
+      const avgTrm = Number(d.totals?.avg_trm || 0);
+
+      const computedSales = (d.sales || []).map((s:any) => {
+        const amountCop = Number(s.amount_cop || 0);
+        const valueUsd  = Number(s.value_usd || 0);
+
+        const cat = (d.categories || []).find((c:any) =>
+          String(c.classification_code) === String(s.category_code)
+        );
+
+        const pct = Number(cat?.applied_commission_pct || 0);
+
+        const commission =
+          amountCop > 0
+            ? amountCop * (pct / 100)
+            : valueUsd * avgTrm * (pct / 100);
+
+        return {
+          ...s,
+          commission_amount: Math.round(commission),
+          is_provisional: true
+        };
+      });
+
+setSales(computedSales);
+
       setTotals(d.totals || {});
       setBudget(d.budget || null);
       setUserBudgetUsd(d.user_budget_usd ?? 0);
       setUserName(d.user?.name ?? d.seller_name ?? 'Vendedor');
+      const turns = Number(d.assigned_turns_for_user ?? 0);
+
+      setAssignedTurns(turns);   // valor real
+      setEditedTurns(turns);     // valor editable
+
     } finally {
       setLoading(false);
     }
@@ -61,12 +97,23 @@ useEffect(() => {
 
   const moneyUSD = (v:number) =>
     new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(v||0);
-  const moneyCOP = (v:number) =>
-    new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP'}).format(v||0);
+const moneyCOP = (v:number) =>
+  new Intl.NumberFormat('es-CO',{
+    style:'currency',
+    currency:'COP',
+    maximumFractionDigits: 0
+  }).format(v||0);
+
 
   /* ================= KPIs ================= */
-  const totalSalesUsd = categories.reduce((s,c)=>s+Number(c.sales_sum_usd||0),0);
-  const totalCommissionUsd = categories.reduce((s,c)=>s+Number(c.commission_sum_usd||0),0);
+const totalSalesUsd = Array.isArray(categories)
+  ? categories.reduce((s,c)=>s+Number(c.sales_sum_usd||0),0)
+  : 0;
+
+const totalCommissionUsd =
+  Number(totals?.total_commission_cop || 0) /
+  Number(totals?.avg_trm || 1);
+
 
   /* ================= CATEGORY DATA ================= */
   const categoryCards = categories.map((c:any) => {
@@ -87,10 +134,62 @@ useEffect(() => {
     };
   });
 
+const saveAssignedTurns = async () => {
+  if (!budgetId || !userId) return;
+
+  setSavingTurns(true);
+  try {
+    await api.post(
+      `/commissions/assign-turns/${userId}/${budgetId}`,
+      { assigned_turns: editedTurns }
+    );
+
+
+    // 🔥 CLAVE: recargar datos desde backend
+    await load();
+
+  } catch (e) {
+    console.error(e);
+    alert('Error al guardar los turnos');
+  } finally {
+    setSavingTurns(false);
+  }
+  console.log(assignedTurns)
+};
+const downloadExcel = async () => {
+  try {
+    const res = await api.get(
+      `/commissions/by-seller/${userId}/export`,
+      {
+        params: { budget_id: budgetId },
+        responseType: 'blob'
+      }
+    );
+
+    const blob = new Blob(
+      [res.data],
+      { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+    );
+
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `commission_detail_${userName}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (e) {
+    console.error(e);
+    alert('Error al descargar Excel');
+  }
+};
+
+
   /* ================= SALES FILTER ================= */
   const filteredSales = useMemo(() => {
     return sales.filter(s => {
-      if (filterCat !== 'ALL' && s.category_code !== filterCat) return false;
+      if (filterCat !== 'ALL' && String(s.category_code ?? '') !== String(filterCat)) return false;
       if (!search) return true;
       return `${s.product} ${s.folio}`.toLowerCase().includes(search.toLowerCase());
     });
@@ -104,6 +203,13 @@ useEffect(() => {
 
         {/* HEADER */}
         <div className="flex justify-between items-start mb-8">
+          <button
+  onClick={downloadExcel}
+  className="px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 text-sm"
+>
+  Exportar Excel
+</button>
+
           <div>
             <div className="text-xs text-gray-500">Detalle de comisiones</div>
             <h2 className="text-2xl font-bold">{userName}</h2>
@@ -115,6 +221,39 @@ useEffect(() => {
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-800 text-xl">✕</button>
         </div>
+        {/* TURNOS */}
+<div className="bg-white rounded-xl shadow border p-4 mb-8">
+  <div className="flex items-center justify-between">
+    <div>
+      <div className="text-xs text-gray-500">Turnos asignados</div>
+      <div className="text-lg font-semibold">{assignedTurns}</div>
+    </div>
+
+    <div className="flex items-center gap-2">
+      <input
+        type="number"
+        min={0}
+        value={editedTurns}
+        onChange={e => setEditedTurns(Number(e.target.value))}
+        className="w-24 border rounded-lg px-3 py-2 text-sm"
+      />
+
+
+      <button
+        onClick={saveAssignedTurns}
+        disabled={savingTurns}
+        className={`px-4 py-2 rounded-lg text-sm font-medium ${
+          savingTurns
+            ? 'bg-gray-300 text-gray-600'
+            : 'bg-indigo-600 text-white hover:bg-indigo-700'
+        }`}
+      >
+        {savingTurns ? 'Guardando…' : 'Guardar'}
+      </button>
+    </div>
+  </div>
+</div>
+
 
         {loading ? (
           <div className="p-16 text-center text-gray-500">Cargando información…</div>
@@ -289,19 +428,15 @@ useEffect(() => {
                 </thead>
                 <tbody>
                   {filteredSales.map(s=>(
-                    <tr key={s.commission_id} className="border-t hover:bg-gray-50">
+                    <tr key={`${s.folio}-${s.sale_date}`} className="border-t hover:bg-gray-50">
                       <td className="p-3">{s.sale_date}</td>
                       <td className="p-3">{s.product || s.folio}</td>
                       <td className="p-3 text-right">{moneyUSD(s.value_usd)}</td>
                       <td className="p-3 text-right">{moneyCOP(s.amount_cop)}</td>
                       <td className="p-3 text-right font-semibold">{moneyCOP(s.commission_amount)}</td>
                       <td className="p-3 text-center">
-                        <span className={`px-3 py-1 rounded-full text-xs ${
-                          s.is_provisional
-                            ? 'bg-yellow-100 text-yellow-700'
-                            : 'bg-green-100 text-green-700'
-                        }`}>
-                          {s.is_provisional ? 'Provisional' : 'Definitiva'}
+                        <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs">
+                            Provisional
                         </span>
                       </td>
                     </tr>

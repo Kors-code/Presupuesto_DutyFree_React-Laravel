@@ -1,243 +1,366 @@
-import React, { useEffect, useState } from 'react';
+// src/modules/commissions/pages/CategoryCommissionsPage.tsx
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-    getCategoriesWithCommission,
-    upsertCategoryCommission,
-    bulkSaveCategoryCommissions,
-    deleteCategoryCommission,
-    getRoles
+  getCategoriesWithCommission,
+  upsertCategoryCommission,
+  bulkSaveCategoryCommissions,
+  deleteCategoryCommission,
+  getRoles,
+  getBudgets
 } from '../services/categoryCommissionService';
+
 import type { CategoryWithCommission, Role } from '../types/comissionscategory';
 
 export default function CategoryCommissionsPage() {
-    const [roleId, setRoleId] = useState<number | null>(null);
-    const [roles, setRoles] = useState<Role[]>([]);
-    const [items, setItems] = useState<CategoryWithCommission[]>([]);
-    const [loading, setLoading] = useState(false);
-    const [savingIds, setSavingIds] = useState<number[]>([]);
-    const [message, setMessage] = useState<string | null>(null);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [roleId, setRoleId] = useState<number | null>(null);
 
-    useEffect(() => {
-        loadRoles();
-    }, []);
+  const [budgets, setBudgets] = useState<any[]>([]);
+  const [budgetId, setBudgetId] = useState<number | null>(null);
 
-    useEffect(() => {
-        if (roleId) loadCategories(roleId);
-        console.log(roleId)
-    }, [roleId]);
+  const [items, setItems] = useState<CategoryWithCommission[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savingIds, setSavingIds] = useState<number[]>([]);
+  const [message, setMessage] = useState<{ type: 'ok'|'error', text: string } | null>(null);
 
-    // dentro de CategoryCommissionsPage.tsx
+  // filas marcadas como modificadas (dirty)
+  const [dirtyIds, setDirtyIds] = useState<Set<number>>(new Set());
 
-    const loadRoles = async () => {
-        try {
-            // getRoles() ya normaliza y devuelve array
-            const rolesData = await getRoles();
-            console.log('ROLES LOADED:', rolesData);
-            setRoles(rolesData || []);
-            if (rolesData && rolesData.length > 0) setRoleId(rolesData[0].id);
-            else setRoleId(null);
-        } catch (e) {
-            console.error('Error cargando roles:', e);
-            setRoles([]);
-            setRoleId(null);
-        }
-    };
 
-    const loadCategories = async (rId: number) => {
-        try {
-            setLoading(true);
-            const res = await getCategoriesWithCommission(rId);
-            // res = { categories: [...] }
-            const cats = res?.categories ?? [];
-            setItems(cats);
-        } catch (e) {
-            console.error('Error cargando categorias:', e);
-            setItems([]);
-        } finally {
-            setLoading(false);
-        }
-    };
+  const normalizeCategoryName = (name: string) => {
+  const n = name.toLowerCase();
 
-    const onChangePct = (idx: number, val: string) => {
-        const clone = [...items];
-        clone[idx].commission_percentage = val === '' ? null : Number(val);
-        setItems(clone);
-    };
+  if (n.includes('frag')) {
+    return 'FRAGANCIA';
+  }
 
-    const saveOne = async (it: CategoryWithCommission, idx: number) => {
-        if (!roleId) return;
-        setSavingIds(s => [...s, it.category_id]);
-        try {
-            await upsertCategoryCommission({
-                category_id: it.category_id,
-                role_id: roleId,
-                commission_percentage: it.commission_percentage ?? 0,
-                commission_percentage100: it.commission_percentage100 ?? 0,
-                commission_percentage120: it.commission_percentage120 ?? 0,
-                min_pct_to_qualify: it.min_pct_to_qualify ?? 80
-            });
+  return name;
+};
 
-            setMessage('Guardado');
-            // reload to get id
-            await loadCategories(roleId);
-        } catch (e: any) {
-            setMessage('Error: ' + (e?.message || ''));
-            console.error(e);
-        } finally {
-            setSavingIds(s => s.filter(id => id !== it.category_id));
-            setTimeout(() => setMessage(null), 2000);
-        }
-    };
 
-    const saveAll = async () => {
-        if (!roleId) return;
-        try {
-            await bulkSaveCategoryCommissions(roleId, items.map(i => ({
-                category_id: i.category_id,
-                commission_percentage: i.commission_percentage ?? 0,
-                commission_percentage100: i.commission_percentage100 ?? 0,
-                commission_percentage120: i.commission_percentage120 ?? 0,
-                min_pct_to_qualify: i.min_pct_to_qualify ?? 80
-            })));
-            setMessage('Guardado masivo exitoso');
-            await loadCategories(roleId);
-        } catch (e) {
-            console.error(e);
-            setMessage('Error al guardar');
-        }
-        setTimeout(() => setMessage(null), 2000);
-    };
+  // load roles + budgets on mount
+  useEffect(() => {
+    let mounted = true;
+    async function loadMeta() {
+      try {
+        const [rolesData, budgetsData] = await Promise.all([getRoles(), getBudgets()]);
+        if (!mounted) return;
+        setRoles(Array.isArray(rolesData) ? rolesData : []);
+        setBudgets(Array.isArray(budgetsData) ? budgetsData : []);
 
-    const removeRow = async (row: CategoryWithCommission) => {
-        if (!row.commission_id) return; // nothing to delete
-        try {
-            await deleteCategoryCommission(row.commission_id);
-            setMessage('Eliminado');
-            if (roleId) await loadCategories(roleId);
-        } catch (e) {
-            console.error(e);
-            setMessage('Error eliminando');
-        }
-        setTimeout(() => setMessage(null), 2000);
-    };
+        if (Array.isArray(rolesData) && rolesData.length) setRoleId(prev => prev ?? rolesData[0].id);
+        if (Array.isArray(budgetsData) && budgetsData.length) setBudgetId(prev => prev ?? budgetsData[0].id);
+      } catch (err) {
+        console.error('Error cargando roles/presupuestos', err);
+        setRoles([]);
+        setBudgets([]);
+      }
+    }
+    loadMeta();
+    return () => { mounted = false; };
+  }, []);
 
-    return (
-        <div className="p-6 max-w-7xl mx-auto">
-            <div className="flex items-center justify-between mb-6">
-                <h1 className="text-2xl font-bold">Configuración de Comisiones por Categoría</h1>
-                <div className="flex gap-2">
-                    <select
-                        value={roleId ?? ''}
-                        onChange={e => setRoleId(Number(e.target.value))}
-                        className="border px-3 py-2 rounded"
-                    >
-                        {roles.length === 0 && (
-                            <option value="">No hay roles creados</option>
-                        )}
+  // load categories when roleId or budgetId changes
+  useEffect(() => {
+    if (!roleId) {
+      setItems([]);
+      return;
+    }
+    loadCategories(roleId, budgetId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roleId, budgetId]);
 
-                        {roles.map(r => (
-                            <option key={r.id} value={r.id}>{r.name}</option>
-                        ))}
-                    </select>
+  const loadCategories = async (rId: number, bId?: number | null) => {
+    try {
+      setLoading(true);
+      const res = await getCategoriesWithCommission(rId, bId ?? undefined);
+      // backend expected to return { categories: [...] } or array directly
+      const cats: CategoryWithCommission[] = res?.categories ?? res?.data ?? res ?? [];
+      setItems(Array.isArray(cats) ? cats : []);
+      setDirtyIds(new Set()); // reset dirty flags on fresh load
+    } catch (err) {
+      console.error('Error cargando categorias:', err);
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-                    <button onClick={saveAll} className="bg-indigo-600 text-white px-4 py-2 rounded">Guardar todo</button>
-                </div>
-            </div>
+  // helpers money
+  const fmtPct = (v: number | null | undefined) => (typeof v === 'number' ? v.toFixed(2) : '');
+  const markDirty = (categoryId: number, dirty = true) => {
+    setDirtyIds(prev => {
+      const clone = new Set(prev);
+      if (dirty) clone.add(categoryId);
+      else clone.delete(categoryId);
+      return clone;
+    });
+  };
 
-            {message && <div className="mb-4 text-sm text-green-700">{message}</div>}
+  // input handlers
+  const onChangeField = (idx: number, field: keyof CategoryWithCommission, rawVal: string) => {
+    const clone = items.slice();
+    const val = rawVal === '' ? null : Number(rawVal);
+    // @ts-ignore
+    clone[idx][field] = val;
+    setItems(clone);
+    markDirty(clone[idx].category_id, true);
+  };
 
-            <div className="bg-white shadow rounded overflow-x-auto">
-                <table className="w-full">
-                    <thead className="bg-gray-100">
-                        <tr>
-                            <th className="p-2 text-left">Categoría</th>
-                            <th className="p-2 text-left">Código</th>
-                            <th className="p-2 text-left">Comisión %</th>
-                            <th className="p-2 text-left">Comisión 100%</th>
-                            <th className="p-2 text-left">Comisión 120%</th>
-                            <th className="p-2 text-left">Min %</th>
-                            <th className="p-2 text-left">Acciones</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {loading ? (
-                            <tr><td colSpan={5} className="p-4">Cargando...</td></tr>
-                        ) : items.map((it, idx) => (
-                            <tr key={it.category_id} className="border-t hover:bg-gray-50">
-                                <td className="p-2">{it.name}</td>
-                                <td className="p-2 text-sm text-gray-500">{it.code}</td>
-                                <td className="p-2">
-                                <input
-                                    type="number"
-                                    step="0.01"
-                                    value={it.commission_percentage ?? ''}
-                                    onChange={e => {
-                                        const clone = [...items];
-                                        clone[idx].commission_percentage = Number(e.target.value);
-                                        setItems(clone);
-                                    }}
-                                    className="border px-2 py-1 rounded w-24"
-                                />
-                            </td>
+  const saveOne = async (it: CategoryWithCommission) => {
+    if (!roleId) return;
+    setSavingIds(s => [...s, it.category_id]);
+    try {
+      await upsertCategoryCommission({
+        category_id: it.category_id,
+        role_id: roleId,
+        commission_percentage: Number(it.commission_percentage ?? 0),
+        commission_percentage100: Number(it.commission_percentage100 ?? 0),
+        commission_percentage120: Number(it.commission_percentage120 ?? 0),
+        min_pct_to_qualify: Number(it.min_pct_to_qualify ?? 80)
+      });
+      setMessage({ type: 'ok', text: 'Guardado' });
+      markDirty(it.category_id, false);
+      // reload to get updated ids / values
+      await loadCategories(roleId, budgetId);
+    } catch (e: any) {
+      console.error('saveOne error', e);
+      setMessage({ type: 'error', text: 'Error al guardar' + (e?.message ? ': ' + e.message : '') });
+    } finally {
+      setSavingIds(s => s.filter(id => id !== it.category_id));
+      setTimeout(() => setMessage(null), 2000);
+    }
+  };
 
-                            <td className="p-2">
-                                <input
-                                    type="number"
-                                    step="0.01"
-                                    value={it.commission_percentage100 ?? ''}
-                                    onChange={e => {
-                                        const clone = [...items];
-                                        clone[idx].commission_percentage100 = Number(e.target.value);
-                                        setItems(clone);
-                                    }}
-                                    className="border px-2 py-1 rounded w-24"
-                                />
-                            </td>
+  const saveAll = async () => {
+    if (!roleId) return;
+    setSaving(true);
+    try {
+      const payload = items.map(i => ({
+        category_id: i.category_id,
+        commission_percentage: Number(i.commission_percentage ?? 0),
+        commission_percentage100: Number(i.commission_percentage100 ?? 0),
+        commission_percentage120: Number(i.commission_percentage120 ?? 0),
+        min_pct_to_qualify: Number(i.min_pct_to_qualify ?? 80)
+      }));
+      await bulkSaveCategoryCommissions(roleId, payload);
+      setMessage({ type: 'ok', text: 'Guardado masivo exitoso' });
+      setDirtyIds(new Set());
+      await loadCategories(roleId, budgetId);
+    } catch (e) {
+      console.error('saveAll error', e);
+      setMessage({ type: 'error', text: 'Error al guardar masivo' });
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMessage(null), 2000);
+    }
+  };
 
-                            <td className="p-2">
-                                <input
-                                    type="number"
-                                    step="0.01"
-                                    value={it.commission_percentage120 ?? ''}
-                                    onChange={e => {
-                                        const clone = [...items];
-                                        clone[idx].commission_percentage120 = Number(e.target.value);
-                                        setItems(clone);
-                                    }}
-                                    className="border px-2 py-1 rounded w-24"
-                                />
-                            </td>
+  const onDelete = async (categoryId: number) => {
+    if (!confirm('¿Eliminar configuración de comisión para esta categoría?')) return;
+    try {
+      await deleteCategoryCommission(categoryId);
+      setMessage({ type: 'ok', text: 'Configuración eliminada' });
+      await loadCategories(roleId as number, budgetId);
+    } catch (e) {
+      console.error('delete error', e);
+      setMessage({ type: 'error', text: 'Error al eliminar' });
+    } finally {
+      setTimeout(() => setMessage(null), 2000);
+    }
+  };
 
-                                <td className="p-2">
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        max={100}
-                                        step="0.1"
-                                        value={it.min_pct_to_qualify ?? 80}
-                                        onChange={(e) => {
-                                            const clone = [...items];
-                                            clone[idx].min_pct_to_qualify = Number(e.target.value);
-                                            setItems(clone);
-                                        }}
-                                        className="border px-2 py-1 rounded w-28"
-                                    />
-                                </td>
-                                <td className="p-2">
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={() => saveOne(it, idx)}
-                                            disabled={savingIds.includes(it.category_id)}
-                                            className="px-3 py-1 border rounded bg-white"
-                                        >
-                                            {savingIds.includes(it.category_id) ? 'Guardando...' : 'Guardar'}
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
+  const anyDirty = useMemo(() => dirtyIds.size > 0, [dirtyIds]);
+
+  const normalizedItems = useMemo(() => {
+  const map = new Map<number | string, CategoryWithCommission>();
+
+  items.forEach(it => {
+    const normalizedName = normalizeCategoryName(it.name);
+
+    // clave única: FRAGANCIA o category_id normal
+    const key = normalizedName === 'FRAGANCIA'
+      ? 'FRAGANCIA'
+      : it.category_id;
+
+    if (!map.has(key)) {
+      map.set(key, {
+        ...it,
+        name: normalizedName
+      });
+    } else {
+      // si es FRAGANCIA, combinamos valores (por si existen duplicados)
+      const existing = map.get(key)!;
+      map.set(key, {
+        ...existing,
+        commission_percentage:
+          Math.max(
+            existing.commission_percentage ?? 0,
+            it.commission_percentage ?? 0
+          ),
+        commission_percentage100:
+          Math.max(
+            existing.commission_percentage100 ?? 0,
+            it.commission_percentage100 ?? 0
+          ),
+        commission_percentage120:
+          Math.max(
+            existing.commission_percentage120 ?? 0,
+            it.commission_percentage120 ?? 0
+          ),
+      });
+    }
+  });
+
+  return Array.from(map.values());
+}, [items]);
+
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      <div className="flex items-center justify-between mb-6 gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Configuración de participación por categoría</h1>
+          <div className="text-sm text-gray-500">Asigna porcentajes por rol y presupuesto</div>
         </div>
-    );
+
+        <div className="flex gap-3 items-center">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Presupuesto</label>
+            <select
+              value={budgetId ?? ''}
+              onChange={e => setBudgetId(e.target.value ? Number(e.target.value) : null)}
+              className="border rounded px-3 py-2 text-sm"
+            >
+              <option value="">(Sin presupuesto)</option>
+              {budgets.map(b => (
+                <option key={b.id} value={b.id}>
+                  {b.name} — {b.start_date} → {b.end_date}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Rol</label>
+            <select
+              value={roleId ?? ''}
+              onChange={e => setRoleId(e.target.value ? Number(e.target.value) : null)}
+              className="border rounded px-3 py-2 text-sm"
+            >
+              {roles.map(r => (
+                <option key={r.id} value={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-end gap-2">
+            <button
+              onClick={saveAll}
+              disabled={!roleId || loading || saving || !anyDirty}
+              className={`px-4 py-2 rounded text-white ${(!roleId || loading || saving || !anyDirty) ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600'}`}
+            >
+              {saving ? 'Guardando...' : 'Guardar todo'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`mb-4 p-3 rounded ${message.type === 'ok' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+          {message.text}
+        </div>
+      )}
+
+      <div className="bg-white shadow rounded overflow-x-auto">
+        <table className="w-full min-w-[900px]">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="p-3 text-left">Categoría</th>
+              <th className="p-3 text-left">Código</th>
+              <th className="p-3 text-left">Comisión %</th>
+              <th className="p-3 text-left">Comisión 100%</th>
+              <th className="p-3 text-left">Comisión 120%</th>
+              <th className="p-3 text-left">Acciones</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7} className="p-6 text-center text-gray-500">Cargando categorías…</td></tr>
+            ) : items.length === 0 ? (
+              <tr><td colSpan={7} className="p-6 text-center text-gray-500">No hay categorías.</td></tr>
+            ) : normalizedItems.map((it, idx) => {
+              const isSaving = savingIds.includes(it.category_id);
+              const isDirty = dirtyIds.has(it.category_id);
+              return (
+                <tr key={it.category_id} className="border-t hover:bg-gray-50">
+                  <td className="p-3 align-top">
+                    <div className="font-medium">{it.name}</div>
+                    <div className="text-xs text-gray-500">{it.description ?? ''}</div>
+                  </td>
+
+                  <td className="p-3 text-sm text-gray-500 align-top">{it.code}</td>
+
+                  <td className="p-3 align-top">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={it.commission_percentage ?? ''}
+                      onChange={e => onChangeField(idx, 'commission_percentage', e.target.value)}
+                      className="border px-2 py-1 rounded w-28"
+                    />
+                    {isDirty && <div className="text-xxs text-indigo-600 mt-1">modificado</div>}
+                  </td>
+
+                  <td className="p-3 align-top">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={it.commission_percentage100 ?? ''}
+                      onChange={e => onChangeField(idx, 'commission_percentage100', e.target.value)}
+                      className="border px-2 py-1 rounded w-28"
+                    />
+                  </td>
+
+                  <td className="p-3 align-top">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={it.commission_percentage120 ?? ''}
+                      onChange={e => onChangeField(idx, 'commission_percentage120', e.target.value)}
+                      className="border px-2 py-1 rounded w-28"
+                    />
+                  </td>
+
+
+
+                  <td className="p-3 align-top">
+                    <div className="flex gap-2 items-center">
+                      <button
+                        onClick={() => saveOne(it)}
+                        disabled={isSaving}
+                        className={`px-3 py-1 rounded border ${isSaving ? 'bg-gray-100 cursor-not-allowed' : 'bg-white hover:bg-gray-50'}`}
+                      >
+                        {isSaving ? 'Guardando...' : 'Guardar'}
+                      </button>
+
+                      <button
+                        onClick={() => onDelete(it.category_id)}
+                        className="px-3 py-1 rounded border bg-white hover:bg-gray-50 text-red-600"
+                        title="Eliminar configuración"
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }

@@ -19,10 +19,9 @@ export default function Navbar() {
   }, []);
 
   const navItems = [
-    { label: "Inicio", to: "/" },
-    { label: "Usuarios", to: "/users" },
-    { label: "Presupuesto", to: "/budget" },
+    { label: "Comisiones Cajeros", to: "CashierAwards" },
     { label: "Comisiones", to: "/CommissionCardsPage" },
+    { label: "Presupuesto", to: "/budget" },
     { label: "Importar ventas", to: "/import-sales" },
   ];
 
@@ -63,10 +62,10 @@ export default function Navbar() {
 
             {/* CTA / user placeholder */}
             <Link
-              to="/users"
+              to="/"
               className="ml-4 inline-flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 text-sm font-medium hover:bg-primary/5 transition"
             >
-              Perfil
+              Inicio
             </Link>
           </nav>
 

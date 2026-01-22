@@ -14,6 +14,8 @@ class BudgetController extends Controller
     /**
      * Listar todos los presupuestos
      */
+    protected int $MIN_PCT_TO_QUALIFY = 80;
+
     public function index()
     {
         return response()->json(
@@ -29,7 +31,6 @@ class BudgetController extends Controller
     $data = $request->validate([
         'name' => 'required|string',
         'target_amount' => 'required|numeric|min:0',
-        'min_pct_to_qualify' => 'required|numeric|min:0|max:100',
         'start_date' => 'required|date',
         'end_date' => 'required|date|after_or_equal:start_date',
         'total_turns' => 'nullable|integer|min:0',
@@ -61,7 +62,6 @@ public function active()
         $budget = Budget::create([
             'name' => 'Automatic budget ' . $today->format('Y-m'),
             'target_amount' => 0,                       // manual: set via UI later
-            'min_pct_to_qualify' => 80,                 // puedes cambiar el default
             'start_date' => $start,
             'end_date' => $end,
             'total_turns' => null,                      // usa default si es null
@@ -82,7 +82,7 @@ public function active()
         'budget' => $budget,
         'sales_total' => $salesTotal,
         'compliance_pct' => $pct,
-        'qualifies' => $pct >= $budget->min_pct_to_qualify
+        'qualifies' => $pct >= $this->MIN_PCT_TO_QUALIFY
     ]);
 }
 
@@ -92,7 +92,6 @@ public function update(Request $request, $id)
     $data = $request->validate([
         'name' => 'sometimes|string',
         'target_amount' => 'sometimes|numeric|min:0',
-        'min_pct_to_qualify' => 'sometimes|numeric|min:0|max:100',
         'start_date' => 'sometimes|date',
         'end_date' => 'sometimes|date|after_or_equal:start_date',
         'total_turns' => 'nullable|integer|min:0',
@@ -105,6 +104,34 @@ public function update(Request $request, $id)
     $budget->save();
 
     return response()->json($budget);
+}
+public function destroy($id)
+{
+    $budget = Budget::find($id);
+    if (!$budget) return response()->json(['message' => 'Budget not found'], 404);
+    $budget->delete();
+    return response()->json(null, 204);
+}
+
+public function updateCashierPrize(Request $request, $id)
+{
+    $data = $request->validate([
+        'cashier_prize' => 'required|numeric|min:0'
+    ]);
+
+    $budget = Budget::find($id);
+    if (!$budget) {
+        return response()->json(['error' => 'Budget not found'], 404);
+    }
+
+    // Guardamos con 2 decimales por seguridad
+    $budget->cashier_prize = round($data['cashier_prize'], 2);
+    $budget->save();
+
+    return response()->json([
+        'status' => 'ok',
+        'cashier_prize' => $budget->cashier_prize
+    ]);
 }
 
 

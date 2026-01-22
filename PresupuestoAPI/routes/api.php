@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\ImportSalesController;
 use App\Http\Controllers\Api\CommissionController;
+use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\CommissionReportController;
 use App\Http\Controllers\Api\CategoryCommissionController;
 use App\Http\Controllers\Api\ImportBatchController;
@@ -37,6 +38,8 @@ Route::prefix('v1')->group(function () {
     Route::get('imports', [ImportBatchController::class, 'index']);
     Route::get('imports/{id}', [ImportBatchController::class, 'show']);
     Route::delete('imports/{id}', [ImportBatchController::class, 'destroy']);
+    Route::post('imports/bulk-delete', [ImportBatchController::class, 'bulkDestroy']);
+
     
     // SALES
     Route::get('sales/users', [SalesByUserController::class, 'getUsersWithSales']);
@@ -52,9 +55,14 @@ Route::prefix('v1')->group(function () {
     
     Route::get('/commissions/by-seller', [CommissionReportController::class, 'bySeller']);
     Route::get('/commissions/by-seller/{userId}', [CommissionReportController::class, 'bySellerDetail']);
-    Route::put('commissions/{userId}/assign-turns', [CommissionReportController::class, 'assignTurns']);
+    Route::put('commissions/assign-turns/{userId}/{budget_id}', [CommissionReportController::class, 'assignTurns']);
+    Route::post('commissions/assign-turns/{userId}/{budget_id}', [CommissionReportController::class, 'assignTurns']);
     
-    
+    // REPORTS Cajeros
+    Route::get('reports/cashier-awards', [ReportController::class, 'cashierAwards']);
+    Route::get('reports/cashier/{userId}/categories', [ReportController::class, 'cashierCategories']);    
+    Route::post('/cashier-adjustments', [ReportController::class,'storeCashierAdjustment']);
+
     // COMMISSION CONFIG
     Route::get('commissions/categories', [CategoryCommissionController::class, 'index']);
     Route::post('commissions/categories', [CategoryCommissionController::class, 'upsert']);
@@ -63,13 +71,34 @@ Route::prefix('v1')->group(function () {
     
     Route::post('/commissions/generate', [CommissionController::class, 'generate']);
     // Budget 
-    
+        
     Route::get('/budgets', [BudgetController::class, 'index']);
     Route::post('/budgets', [BudgetController::class, 'store']);
     Route::get('/budgets/active', [BudgetController::class, 'active']);
-    Route::get('/budgets/progress/daily', [BudgetProgressController::class, 'daily']);
+    Route::put('/budgets/{id}', [BudgetController::class, 'update']);
+    Route::delete('/budgets/{id}', [BudgetController::class, 'destroy']);
+    Route::patch('/budgets/{id}/cashier-prize', [BudgetController::class, 'updateCashierPrize']);
 
 
+    // EXCEL EXPORT ROUTE
+
+
+    Route::get(
+        '/commissions/export',
+        [CommissionReportController::class, 'exportExcel']
+    );
+
+    // Exportar premios de cajeros
+    Route::get(
+    '/reports/cashier-awards/export',
+    [ReportController::class, 'cashierAwardsExport']
+);
+
+    // Exportar detalle de comisiones por vendedor
+    Route::get(
+    '/commissions/by-seller/{userId}/export',
+    [CommissionReportController::class, 'exportSellerDetail']
+);
 
 
 

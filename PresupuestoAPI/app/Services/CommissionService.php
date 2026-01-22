@@ -6,7 +6,6 @@ use App\Models\Budget;
 use App\Models\Sale;
 use App\Models\Category;
 use App\Models\CategoryCommission;
-use App\Models\Commission;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -21,6 +20,7 @@ class CommissionService
     // fragancias handling
     const FRAG_KEY = 'fragancias';
     const FRAG_CODES = [10, 11, 12];
+    protected int $MIN_PCT_TO_QUALIFY = 80;
 
     /**
      * Genera comisiones para un presupuesto específico (delegado a processBudget).
@@ -63,31 +63,54 @@ class CommissionService
         return $this->processBudget($budget);
     }
 
-    /**
-     * Core processing for a given budget.
-     */
     protected function processBudget(Budget $budget): array
     {
-        Log::info('[COMMISSION] Processing budget', [
+        // process all users
+        $result = $this->processBudgetForUsers($budget, null);
+
+        return $result + [
+            'status' => $result['status'] ?? 'ok'
+        ];
+    }
+
+    /**
+     * Procesa un presupuesto, opcionalmente restringido a una lista de usuarios.
+     *
+     * @param Budget $budget
+     * @param int[]|null $onlyUserIds Si null => procesa todos; si array => procesa solo esos usuarios
+     *
+     * @return array (resumen)
+     */
+    protected function processBudgetForUsers(Budget $budget, ?array $onlyUserIds = null): array
+    {
+        Log::info('[COMMISSION] processBudgetForUsers', [
             'budget_id' => $budget->id,
-            'range' => [$budget->start_date, $budget->end_date],
-            'target_usd' => $budget->target_amount,
+            'onlyUserIds' => $onlyUserIds
         ]);
 
         $totalTurns = $budget->total_turns ?? $this->TOTAL_TURNS;
 
-        // total USD to determine provisional
-        $totalUsd = Sale::whereBetween('sale_date', [$budget->start_date, $budget->end_date])
-            ->sum(DB::raw('COALESCE(value_usd,0)'));
+        // total USD and COP to determine provisional (respect budget_id if column exists)
+        $totalUsdQuery = Sale::whereBetween('sale_date', [$budget->start_date, $budget->end_date]);
+        $totalCopQuery = Sale::whereBetween('sale_date', [$budget->start_date, $budget->end_date]);
+
+        if (Schema::hasColumn('sales', 'budget_id')) {
+            $totalUsdQuery->where('sales.budget_id', $budget->id);
+            $totalCopQuery->where('sales.budget_id', $budget->id);
+        }
+
+        $totalUsd = (float) $totalUsdQuery->sum(DB::raw('COALESCE(value_usd,0)'));
+        $totalCop = (float) $totalCopQuery->sum(DB::raw('COALESCE(amount_cop,0)'));
 
         $pct = $budget->target_amount > 0
             ? ($totalUsd / $budget->target_amount) * 100
             : 0;
 
-        $isProvisional = $pct < $budget->min_pct_to_qualify;
+        $isProvisional = $pct < $this->MIN_PCT_TO_QUALIFY;
 
         Log::info('[COMMISSION] Budget progress', [
             'total_sales_usd' => round($totalUsd, 2),
+            'total_sales_cop' => round($totalCop, 2),
             'pct' => round($pct, 2),
             'is_provisional' => $isProvisional,
         ]);
@@ -95,26 +118,40 @@ class CommissionService
         DB::beginTransaction();
 
         try {
-            // 1) ventas agregadas por seller + grupo (USD)
+            // 1) ventas agregadas por seller + grupo (USD + COP)
             $caseFrag = $this->getSqlClassificationCase();
 
-            $salesByUserGroupRows = Sale::selectRaw("
+            $salesByUserGroupQuery = Sale::selectRaw("
                     {$caseFrag} AS classification,
                     sales.seller_id,
-                    SUM(COALESCE(sales.value_usd,0)) AS sales_usd
+                    SUM(COALESCE(sales.value_usd,0)) AS sales_usd,
+                    SUM(COALESCE(sales.amount_cop,0)) AS sales_cop
                 ")
                 ->leftJoin('products','sales.product_id','=','products.id')
-                ->whereBetween('sales.sale_date', [$budget->start_date, $budget->end_date])
+                ->whereBetween('sales.sale_date', [$budget->start_date, $budget->end_date]);
+
+            if (Schema::hasColumn('sales', 'budget_id')) {
+                $salesByUserGroupQuery->where('sales.budget_id', $budget->id);
+            }
+
+            if (is_array($onlyUserIds) && !empty($onlyUserIds)) {
+                $salesByUserGroupQuery->whereIn('sales.seller_id', $onlyUserIds);
+            }
+
+            $salesByUserGroupRows = $salesByUserGroupQuery
                 ->groupBy(DB::raw($caseFrag), 'sales.seller_id')
                 ->get();
 
-            $salesByUserGroup = []; // [user_id][group] => sales_usd
+            $salesByUserGroup = []; // [user_id][group] => ['sales_usd'=>..., 'sales_cop'=>...]
             $userIds = [];
             foreach ($salesByUserGroupRows as $r) {
                 $grp = $this->normalizeClassification($r->classification);
                 $uid = (int)$r->seller_id;
                 $userIds[$uid] = true;
-                $salesByUserGroup[$uid][$grp] = (float)$r->sales_usd;
+                $salesByUserGroup[$uid][$grp] = [
+                    'sales_usd' => (float)$r->sales_usd,
+                    'sales_cop' => (float)$r->sales_cop
+                ];
             }
 
             // 2) categories model -> group participation & category ids
@@ -133,16 +170,21 @@ class CommissionService
                 }
             }
 
-            // 3) obtener assigned_turns de los usuarios que aparecen en ventas
+            // 3) obtener assigned_turns de budget_user_turns (NO de users.assigned_turns)
             $assignedTurnsByUser = [];
             if (!empty($userIds)) {
-                $users = User::whereIn('id', array_keys($userIds))->select('id','assigned_turns')->get();
-                foreach ($users as $u) {
-                    $assignedTurnsByUser[$u->id] = (int)($u->assigned_turns ?? 0);
+                // fetch assigned_turns for these users in this budget
+                $assignedRows = DB::table('budget_user_turns')
+                    ->where('budget_id', $budget->id)
+                    ->whereIn('user_id', array_keys($userIds))
+                    ->pluck('assigned_turns', 'user_id'); // [user_id => assigned_turns]
+
+                foreach ($userIds as $uid => $_) {
+                    $assignedTurnsByUser[$uid] = (int)($assignedRows[$uid] ?? 0);
                 }
             }
 
-            // 4) calcular pctUserByGroup [user][group] => ['pct','category_budget_for_user','sales_usd']
+            // 4) calcular pctUserByGroup [user][group] => ['pct','category_budget_for_user','sales_usd','sales_cop']
             $pctUserByGroup = [];
             foreach ($assignedTurnsByUser as $uid => $assigned) {
                 $userBudgetUsd = $totalTurns > 0 ? round($budget->target_amount * ($assigned / $totalTurns), 2) : 0.0;
@@ -151,7 +193,9 @@ class CommissionService
                     $participation = $meta['participation_pct'] ?? 0;
                     $categoryBudgetForUser = $userBudgetUsd * ($participation / 100);
 
-                    $salesUsd = $salesByUserGroup[$uid][$grp] ?? 0.0;
+                    $salesUsd = $salesByUserGroup[$uid][$grp]['sales_usd'] ?? 0.0;
+                    $salesCop = $salesByUserGroup[$uid][$grp]['sales_cop'] ?? 0.0;
+
                     if ($categoryBudgetForUser > 0) {
                         $pctVal = round(($salesUsd / $categoryBudgetForUser) * 100, 2);
                     } else {
@@ -160,7 +204,8 @@ class CommissionService
                     $pctUserByGroup[$uid][$grp] = [
                         'pct' => $pctVal,
                         'category_budget_for_user' => $categoryBudgetForUser,
-                        'sales_usd' => $salesUsd
+                        'sales_usd' => $salesUsd,
+                        'sales_cop' => $salesCop
                     ];
                 }
             }
@@ -183,7 +228,7 @@ class CommissionService
                 $group = $categoryIdToGroup[$catId] ?? null;
                 if (!$group) continue;
 
-                // store rule model for potential rule_id persistence
+                // store rule model for potential rule selection
                 $ruleByRoleCategory[$roleId][$catId] = $row;
 
                 if (!isset($ratesByGroupByRole[$roleId][$group])) {
@@ -203,57 +248,28 @@ class CommissionService
                 }
             }
 
-            // 6) process each sale and create/update commissions applying appliedPct from pctUserByGroup
-            $sales = Sale::whereBetween('sale_date', [$budget->start_date, $budget->end_date])
-                ->where(function($q){
-                    $q->where('amount_cop','>',0)
-                      ->orWhere('value_pesos','>',0)
-                      ->orWhere('amount','>',0)
-                      ->orWhere('value_usd','>',0);
-                })
-                ->with(['seller','product'])
-                ->get();
+            // 6) For each user+group compute appliedPct and upsert into budget_user_category_totals
+            $usersProcessed = [];
+            foreach ($pctUserByGroup as $uid => $groups) {
+                $userTotalsSalesUsd = 0.0;
+                $userTotalsSalesCop = 0.0;
+                $userTotalsCommissionCop = 0.0;
 
-            Log::info('[COMMISSION] Sales fetched for creation', [
-                'count' => $sales->count()
-            ]);
+                // resolve user's role once (prefer at budget end date)
+                $userModel = User::find($uid);
+                $userRole = $this->resolveRoleModelForUserAtDate($userModel, $budget->end_date);
+                $roleId = $userRole ? (int)$userRole->id : null;
 
-            $created = $updated = $skipped = 0;
-
-            foreach ($sales as $sale) {
-                if (!$sale->seller || !$sale->product) {
-                    $skipped++; 
-                    Log::warning('[SALE] Skipped missing relations', ['sale_id' => $sale->id]);
-                    continue;
-                }
-
-                $baseCop = $this->getBaseCop($sale);
-                if ($baseCop <= 0) {
-                    $skipped++;
-                    Log::warning('[SALE] Skipped baseCop <= 0', ['sale_id' => $sale->id]);
-                    continue;
-                }
-
-                $classification = $this->normalizeClassification((string)$sale->product->classification);
-
-                $beneficiaries = [$sale->seller];
-                $cashierUser = $this->resolveCashierUser($sale);
-                if ($cashierUser && $cashierUser->id !== $sale->seller->id) $beneficiaries[] = $cashierUser;
-
-                foreach ($beneficiaries as $user) {
-                    // resolve role for user at sale date
-                    $role = $this->resolveRoleModelForUserAtDate($user, $sale->sale_date);
-                    if (!$role) {
-                        Log::warning('[BENEFICIARY] No role for user at date', ['user_id' => $user->id, 'sale_id' => $sale->id]);
-                        continue;
-                    }
-                    $roleId = (int)$role->id;
+                foreach ($groups as $grp => $entry) {
+                    $salesUsd = (float)($entry['sales_usd'] ?? 0.0);
+                    $salesCop = (float)($entry['sales_cop'] ?? 0.0);
+                    $pctUser = $entry['pct'];
 
                     // find rates for role+group
-                    $rates = $ratesByGroupByRole[$roleId][$classification] ?? null;
+                    $rates = $roleId ? ($ratesByGroupByRole[$roleId][$grp] ?? null) : null;
                     if (!$rates) {
-                        // try fallback: find a rule for any category in the group for this role
-                        $possibleCatIds = $categoryGroupMap[$classification]['category_ids'] ?? [];
+                        // fallback: find any rule for a category in the group for this role
+                        $possibleCatIds = $categoryGroupMap[$grp]['category_ids'] ?? [];
                         $foundRule = null;
                         foreach ($possibleCatIds as $cid) {
                             if (isset($ruleByRoleCategory[$roleId][$cid])) {
@@ -271,110 +287,86 @@ class CommissionService
                     }
 
                     if (!$rates) {
-                        Log::warning('[RULE] No rates for role+group', [
-                            'role_id' => $roleId,
-                            'group' => $classification,
-                            'sale_id' => $sale->id
-                        ]);
-                        $skipped++;
-                        continue;
-                    }
-
-                    // pct for this user+group (precomputed)
-                    $pctEntry = $pctUserByGroup[$user->id][$classification] ?? ['pct' => null];
-                    $pctUser = $pctEntry['pct'];
-
-                    // decide applied percentage
-                    $appliedPct = 0.0;
-                    if (is_null($pctUser) || $pctUser < (float)$budget->min_pct_to_qualify) {
+                        // no rule found -> skip group for this user
+                        Log::debug('[COMMISSION] no rates for role+group', ['user_id' => $uid, 'group' => $grp]);
                         $appliedPct = 0.0;
                     } else {
-                        if ($pctUser >= 120) {
-                            $appliedPct = $rates['pct120'] ?? $rates['pct100'] ?? $rates['base'] ?? 0.0;
-                        } elseif ($pctUser >= 100) {
-                            $appliedPct = $rates['pct100'] ?? $rates['base'] ?? 0.0;
+                        // decide applied percentage
+                        $appliedPct = 0.0;
+                        if (!is_null($pctUser) && $pctUser >= $this->MIN_PCT_TO_QUALIFY) {
+                            if ($pctUser >= 120) {
+                                $appliedPct = $rates['pct120'] ?? $rates['pct100'] ?? $rates['base'] ?? 0.0;
+                            } elseif ($pctUser >= 100) {
+                                $appliedPct = $rates['pct100'] ?? $rates['base'] ?? 0.0;
+                            } else {
+                                $appliedPct = $rates['base'] ?? 0.0;
+                            }
+                        } // else remains 0
+                    }
+
+                    // compute commission_cop from aggregates (fast)
+                    $commissionCop = 0.0;
+                    if ($salesCop > 0) {
+                        $commissionCop = round($salesCop * ((float)$appliedPct / 100), 2);
+                    } elseif ($salesUsd > 0) {
+                        // fallback using global trm if available
+                        $trmGlobal = ($totalUsd > 0 && $totalCop > 0) ? ($totalCop / $totalUsd) : null;
+                        if ($trmGlobal && $trmGlobal > 0) {
+                            $commissionCop = round(($salesUsd * ((float)$appliedPct / 100)) * $trmGlobal, 2);
                         } else {
-                            $appliedPct = $rates['base'] ?? 0.0;
+                            // cannot compute in COP -> leave 0 (we prioritized speed)
+                            $commissionCop = 0.0;
                         }
                     }
 
-                    // commission in COP using appliedPct
-                    $commissionCop = round($baseCop * ((float)$appliedPct / 100), 2);
-                    if ($commissionCop <= 0) {
-                        Log::warning('[COMMISSION] Computed zero commission', [
-                            'sale_id' => $sale->id,
-                            'user_id' => $user->id,
-                            'applied_pct' => $appliedPct,
-                            'base_cop' => $baseCop,
-                        ]);
-                        $skipped++;
-                        continue;
-                    }
-
-                    // pick an appropriate rule_id to store (first matching category in group if exists)
-                    $ruleIdToStore = null;
-                    $possibleCatIds = $categoryGroupMap[$classification]['category_ids'] ?? [];
-                    foreach ($possibleCatIds as $cid) {
-                        if (isset($ruleByRoleCategory[$roleId][$cid])) {
-                            $ruleIdToStore = $ruleByRoleCategory[$roleId][$cid]->id;
-                            break;
-                        }
-                    }
-
-                    $payload = [
-                        'commission_amount' => $commissionCop,
-                        'is_provisional' => $isProvisional,
-                        'calculated_as' => $role->name,
-                        'rule_id' => $ruleIdToStore,
-                    ];
-
-                    // persist applied pct if column exists
-                    if (Schema::hasColumn('commissions', 'applied_commission_pct')) {
-                        $payload['applied_commission_pct'] = $appliedPct;
-                    } elseif (Schema::hasColumn('commissions', 'applied_pct')) {
-                        $payload['applied_pct'] = $appliedPct;
-                    } else {
-                        // append for traceability without altering schema
-                        $payload['calculated_as'] = ($payload['calculated_as'] ?? '') . " (applied_pct={$appliedPct})";
-                    }
-
-                    $commission = Commission::updateOrCreate(
+                    // upsert aggregated row per budget,user,group
+                    DB::table('budget_user_category_totals')->updateOrInsert(
                         [
-                            'sale_id' => $sale->id,
-                            'user_id' => $user->id,
                             'budget_id' => $budget->id,
+                            'user_id' => $uid,
+                            'category_group' => $grp,
                         ],
-                        $payload
+                        [
+                            'sales_usd' => $salesUsd,
+                            'sales_cop' => $salesCop,
+                            'commission_cop' => $commissionCop,
+                            'applied_pct' => $appliedPct,
+                            'updated_at' => now(),
+                        ]
                     );
 
-                    $commission->wasRecentlyCreated ? $created++ : $updated++;
+                    $userTotalsSalesUsd += $salesUsd;
+                    $userTotalsSalesCop += $salesCop;
+                    $userTotalsCommissionCop += $commissionCop;
+                } // end groups for user
 
-                    Log::info('[COMMISSION] Saved', [
-                        'commission_id' => $commission->id,
-                        'sale_id' => $sale->id,
-                        'user_id' => $user->id,
-                        'commission_cop' => $commissionCop,
-                        'applied_pct' => $appliedPct,
-                    ]);
-                } // end beneficiaries
-            } // end sales loop
+                // update budget_user_totals row for user
+                DB::table('budget_user_totals')->updateOrInsert(
+                    ['budget_id' => $budget->id, 'user_id' => $uid],
+                    [
+                        'total_sales_usd' => $userTotalsSalesUsd,
+                        'total_sales_cop' => $userTotalsSalesCop,
+                        'total_commission_cop' => $userTotalsCommissionCop,
+                        'updated_at' => now(),
+                    ]
+                );
+
+                $usersProcessed[] = $uid;
+            } // end users loop
 
             DB::commit();
 
-            Log::info('[COMMISSION] Finished processBudget', [
-                'created' => $created,
-                'updated' => $updated,
-                'skipped' => $skipped,
+            Log::info('[COMMISSION] Finished processBudgetForUsers (aggregated mode)', [
+                'users_processed' => count($usersProcessed),
                 'pct' => round($pct,2),
                 'is_provisional' => $isProvisional,
             ]);
 
             return [
                 'status' => 'ok',
-                'created' => $created,
-                'updated' => $updated,
-                'skipped' => $skipped,
+                'users_processed' => count($usersProcessed),
                 'total_sales_usd' => round($totalUsd, 2),
+                'total_sales_cop' => round($totalCop, 2),
                 'pct' => round($pct, 2),
                 'is_provisional' => $isProvisional,
             ];
@@ -389,6 +381,50 @@ class CommissionService
                 'status' => 'error',
                 'message' => $e->getMessage(),
             ];
+        }
+    }
+
+    /**
+     * Recalcula las agregaciones PARA UN usuario + budget:
+     * - borra las filas de budget_user_category_totals de ese user+budget
+     * - reprocesa las ventas de ese usuario en ese budget (re-inserta desde agregados)
+     */
+    public function recalcForUserAndBudget(int $userId, int $budgetId): void
+    {
+        Log::info('[COMMISSION] Recalc aggregated for user+budget', [
+            'user_id' => $userId,
+            'budget_id' => $budgetId,
+        ]);
+
+        $budget = Budget::findOrFail($budgetId);
+
+        DB::beginTransaction();
+        try {
+            // delete previous aggregated rows for this user+budget
+            DB::table('budget_user_category_totals')
+                ->where('budget_id', $budgetId)
+                ->where('user_id', $userId)
+                ->delete();
+
+            DB::table('budget_user_totals')
+                ->where('budget_id', $budgetId)
+                ->where('user_id', $userId)
+                ->delete();
+
+            // Re-run a narrow process for this single user
+            $result = $this->processBudgetForUsers($budget, [$userId]);
+
+            Log::info('[COMMISSION] Recalc aggregated finished', ['result' => $result]);
+
+            DB::commit();
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            Log::error('[COMMISSION] Recalc failed', [
+                'user_id' => $userId,
+                'budget_id' => $budgetId,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 
@@ -427,12 +463,24 @@ class CommissionService
         END";
     }
 
+    /**
+     * Obtiene el monto base en COP para un sale (no usado en agregación rápida,
+     * pero lo dejo por compatibilidad si deseas volver a cálculo por venta).
+     */
     protected function getBaseCop(Sale $sale): float
     {
-        if ($sale->amount_cop > 0) return (float) $sale->amount_cop;
-        if ($sale->value_pesos > 0) return (float) $sale->value_pesos;
-        if ($sale->amount > 0) return (float) $sale->amount;
-        return 0;
+        if (!empty($sale->amount_cop) && $sale->amount_cop > 0) return (float) $sale->amount_cop;
+        if (!empty($sale->value_pesos) && $sale->value_pesos > 0) return (float) $sale->value_pesos;
+        if (!empty($sale->amount) && $sale->amount > 0) return (float) $sale->amount;
+
+        if (!empty($sale->value_usd) && $sale->value_usd > 0) {
+            $trm = $sale->exchange_rate ?? 0;
+            if ($trm && $trm > 0) {
+                return (float) round($sale->value_usd * $trm, 2);
+            }
+        }
+
+        return 0.0;
     }
 
     protected function resolveCashierUser(Sale $sale): ?User

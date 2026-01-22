@@ -12,8 +12,7 @@ export default function HomePage() {
                 Portal Corporativo
               </h1>
               <p className="mt-3 text-gray-600 max-w-xl">
-                Gestiona ventas, comisiones y presupuestos desde un panel central,
-                pensado para equipos operativos y gerenciales. Responsive y accesible.
+                
               </p>
             </div>
 
@@ -35,14 +34,11 @@ export default function HomePage() {
         <h2 className="text-2xl font-bold text-gray-800 mb-6">Módulos</h2>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          <ModuleCard title="Usuarios" to="/users" description="Gestión de cuentas y permisos" />
           <ModuleCard title="Presupuesto" to="/budget" description="Objetivos y seguimiento" />
           <ModuleCard title="Progreso Diario" to="/BudgetDailyProgressPage" description="Evolución diaria" />
           <ModuleCard title="Comisiones" to="/CommissionCardsPage" description="Resumen y detalles" />
-          <ModuleCard title="Comisiones por Usuario" to="/CommissionsByUserPage" description="Detalle por vendedor" />
           <ModuleCard title="Importar Ventas" to="/import-sales" description="Carga masiva y validación" />
           <ModuleCard title="Historial de Importes" to="/importList" description="Registros de cargas" />
-          <ModuleCard title="Ventas por Usuario" to="/sales-by-user" description="Performance por vendedor" />
           <ModuleCard title="Categorías" to="/commissions/categories" description="Ajustes por categoría" />
         </div>
       </section>

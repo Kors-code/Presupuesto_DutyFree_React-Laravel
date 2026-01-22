@@ -73,4 +73,60 @@ class ImportBatchController extends Controller
             return response()->json(['error' => 'No se pudo eliminar el batch', 'detail' => $e->getMessage()], 500);
         }
     }
+
+    // POST /api/v1/imports/bulk-delete
+public function bulkDestroy(Request $request)
+{
+    $request->validate([
+        'ids' => 'required|array|min:1',
+        'ids.*' => 'integer|distinct|exists:import_batches,id',
+    ]);
+
+    $ids = $request->input('ids');
+
+    DB::beginTransaction();
+
+    try {
+        $batches = ImportBatch::whereIn('id', $ids)->get();
+
+        foreach ($batches as $batch) {
+
+            // 1) borrar ventas
+            Sale::where('import_batch_id', $batch->id)->delete();
+
+            // 2) borrar archivo físico (si existe)
+            try {
+                $path = 'imports/' . $batch->filename;
+                if ($batch->filename && Storage::exists($path)) {
+                    Storage::delete($path);
+                }
+            } catch (\Throwable $e) {
+                Log::warning("No se pudo borrar archivo del batch {$batch->id}: " . $e->getMessage());
+            }
+
+            // 3) borrar batch
+            $batch->delete();
+        }
+
+        DB::commit();
+
+        return response()->json([
+            'message' => 'Batches eliminados correctamente',
+            'deleted' => count($ids)
+        ]);
+
+    } catch (\Throwable $e) {
+        DB::rollBack();
+        Log::error('Bulk delete imports failed', [
+            'error' => $e->getMessage(),
+            'ids' => $ids
+        ]);
+
+        return response()->json([
+            'message' => 'Error eliminando batches',
+            'error' => $e->getMessage()
+        ], 500);
+    }
+}
+
 }
