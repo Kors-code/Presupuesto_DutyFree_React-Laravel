@@ -20,6 +20,12 @@ export default function ImportsPage() {
   const [error, setError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [msg, setMsg] = useState<string>('');
+// filtros
+const [filterFilename, setFilterFilename] = useState('');
+const [filterFromDate, setFilterFromDate] = useState('');
+const [filterToDate, setFilterToDate] = useState('');
+
+
 
   useEffect(() => { load(); }, []);
 
@@ -105,6 +111,38 @@ export default function ImportsPage() {
   }
 
 
+  // Filtros
+  const filteredBatches = React.useMemo(() => {
+  return batches.filter(b => {
+    // filtro por nombre de archivo
+    if (
+      filterFilename &&
+      !b.filename.toLowerCase().includes(filterFilename.toLowerCase())
+    ) {
+      return false;
+    }
+
+    if (b.created_at) {
+      const createdAt = new Date(b.created_at).getTime();
+
+      // filtro desde fecha
+      if (filterFromDate) {
+        const from = new Date(filterFromDate).setHours(0, 0, 0, 0);
+        if (createdAt < from) return false;
+      }
+
+      // filtro hasta fecha
+      if (filterToDate) {
+        const to = new Date(filterToDate).setHours(23, 59, 59, 999);
+        if (createdAt > to) return false;
+      }
+    }
+
+    return true;
+  });
+}, [batches, filterFilename, filterFromDate, filterToDate]);
+
+
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -141,6 +179,55 @@ export default function ImportsPage() {
           </button>
         </div>
       </div>
+      {/* Filtros */}
+<div className="bg-white p-4 rounded shadow space-y-3">
+  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+    <div>
+      <label className="text-xs text-gray-600">Nombre del archivo</label>
+      <input
+        type="text"
+        value={filterFilename}
+        onChange={(e) => setFilterFilename(e.target.value)}
+        placeholder="ej: ventas_enero"
+        className="w-full border rounded px-2 py-1 text-sm"
+      />
+    </div>
+
+    <div>
+      <label className="text-xs text-gray-600">Desde</label>
+      <input
+        type="date"
+        value={filterFromDate}
+        onChange={(e) => setFilterFromDate(e.target.value)}
+        className="w-full border rounded px-2 py-1 text-sm"
+      />
+    </div>
+
+    <div>
+      <label className="text-xs text-gray-600">Hasta</label>
+      <input
+        type="date"
+        value={filterToDate}
+        onChange={(e) => setFilterToDate(e.target.value)}
+        className="w-full border rounded px-2 py-1 text-sm"
+      />
+    </div>
+
+    <div className="flex items-end">
+      <button
+        onClick={() => {
+          setFilterFilename('');
+          setFilterFromDate('');
+          setFilterToDate('');
+        }}
+        className="w-full px-3 py-2 border rounded text-sm"
+      >
+        Limpiar filtros
+      </button>
+    </div>
+  </div>
+</div>
+
 
       {/* Tabla con selección */}
       <div className="bg-white rounded shadow overflow-x-auto">
@@ -150,8 +237,12 @@ export default function ImportsPage() {
               <input
                 type="checkbox"
                 onChange={toggleSelectAll}
-                checked={batches.length > 0 && batches.every(d => selectedIds.includes(d.id))}
+                checked={
+                  filteredBatches.length > 0 &&
+                  filteredBatches.every(d => selectedIds.includes(d.id))
+                }
               />
+
               <span className="text-sm">Seleccionar todo</span>
             </label>
 
@@ -164,7 +255,10 @@ export default function ImportsPage() {
             </button>
           </div>
 
-          <div className="text-sm text-gray-600">{batches.length} registros</div>
+          <div className="text-sm text-gray-600">
+            {filteredBatches.length} registros
+          </div>
+
         </div>
 
         {loading ? (
@@ -182,7 +276,7 @@ export default function ImportsPage() {
               </tr>
             </thead>
             <tbody>
-              {batches.map(b => (
+              {filteredBatches.map(b => (
                 <tr key={b.id} className="border-t">
                   <td className="p-3">
                     <input
@@ -207,11 +301,14 @@ export default function ImportsPage() {
                 </tr>
               ))}
 
-              {batches.length === 0 && (
+              {filteredBatches.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="p-6 text-center text-gray-500">No hay archivos importados</td>
+                  <td colSpan={6} className="p-6 text-center text-gray-500">
+                    No hay resultados con los filtros aplicados
+                  </td>
                 </tr>
               )}
+
             </tbody>
           </table>
         )}

@@ -10,58 +10,81 @@ type SaleRow = {
   value_usd: number;
   exchange_rate?: number | null;
 
-  // ⚠️ ahora es calculado en frontend
+  // ⚠️ calculado en frontend
   commission_amount?: number;
 
   is_provisional?: boolean;
   category_code?: string;
 };
 
-
-
 export default function CommissionDetailModal({
   userId,
-  budgetId,
+  budgetIds,
   onClose
 }: {
   userId: number;
-  budgetId: number;
+  budgetIds: number[];            // ahora recibe un array de presupuestos
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [sales, setSales] = useState<SaleRow[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [totals, setTotals] = useState<any>(null);
-  const [budget, setBudget] = useState<any>(null);
+  const [budgetInfo, setBudgetInfo] = useState<any>(null); // info retornada por el API (puede ser agregado)
   const [userBudgetUsd, setUserBudgetUsd] = useState<number>(0);
   const [userName, setUserName] = useState<string>('Vendedor');
 
   const [filterCat, setFilterCat] = useState<string>('ALL');
   const [search, setSearch] = useState('');
   const [categoryView, setCategoryView] = useState<'cards' | 'table'>('cards');
-  const [assignedTurns, setAssignedTurns] = useState<number>(0); // backend
-  const [editedTurns, setEditedTurns] = useState<number>(0);     // input
+
+  // Turnos: mostramos el total agregado, pero permitimos editar por presupuesto individual
+  const [assignedTurnsTotal, setAssignedTurnsTotal] = useState<number>(0); // suma de turnos asignados en budgets seleccionados
+  const [selectedBudgetForEdit, setSelectedBudgetForEdit] = useState<number | null>(null); // presupuesto a editar
+  const [editedTurns, setEditedTurns] = useState<number>(0);     // input editable para el presupuesto seleccionado
   const [savingTurns, setSavingTurns] = useState(false);
 
+  // Guardar una representación string de budgetIds en el effect deps para detectar cambios en order/values
+  const budgetIdsKey = (budgetIds || []).join(',');
 
-useEffect(() => {
-  if (userId && budgetId) load();
-}, [userId, budgetId]);
+  // Construye query params con budget_ids[]
+  const buildBudgetParams = (ids: number[]) => {
+    const p = new URLSearchParams();
+    ids.forEach(id => p.append('budget_ids[]', String(id)));
+    return p.toString();
+  };
+
+  useEffect(() => {
+    if (userId && budgetIds && budgetIds.length > 0) {
+      // default selected budget to first (usable for editing turns)
+      setSelectedBudgetForEdit(budgetIds[0] ?? null);
+      load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, budgetIdsKey]);
 
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.get(`commissions/by-seller/${userId}?budget_id=${budgetId}`);
+      // Llamada multi-budget: commissions/by-seller/:userId?budget_ids[]=1&budget_ids[]=2...
+      const q = buildBudgetParams(budgetIds);
+      const res = await api.get(`commissions/by-seller/${userId}?${q}`);
       const d = res.data || {};
-      console.log('API categories:', d.categories);
+
+      // categories, sales, totals, budget info (el backend ya devuelve agregados para los budgets)
       setCategories(d.categories || []);
-      const avgTrm = Number(d.totals?.avg_trm || 0);
+      setTotals(d.totals || {});
+      setBudgetInfo(d.budget || null);
+      setUserBudgetUsd(d.user_budget_usd ?? 0);
+      setUserName(d.user?.name ?? d.seller_name ?? 'Vendedor');
 
-      const computedSales = (d.sales || []).map((s:any) => {
+      // sales: calculamos la comisión provisional en frontend (igual que exportSellerDetail)
+      const avgTrm = Number(d.totals?.avg_trm || 0) || 1;
+      const computedSales: SaleRow[] = (d.sales || []).map((s: any) => {
         const amountCop = Number(s.amount_cop || 0);
-        const valueUsd  = Number(s.value_usd || 0);
+        const valueUsd = Number(s.value_usd || 0);
 
-        const cat = (d.categories || []).find((c:any) =>
+        const cat = (d.categories || []).find((c: any) =>
           String(c.classification_code) === String(s.category_code)
         );
 
@@ -79,48 +102,49 @@ useEffect(() => {
         };
       });
 
-setSales(computedSales);
+      setSales(computedSales);
 
-      setTotals(d.totals || {});
-      setBudget(d.budget || null);
-      setUserBudgetUsd(d.user_budget_usd ?? 0);
-      setUserName(d.user?.name ?? d.seller_name ?? 'Vendedor');
-      const turns = Number(d.assigned_turns_for_user ?? 0);
+      // assigned_turns_for_user llega como agregado (suma) desde backend
+      const assigned = Number(d.assigned_turns_for_user ?? 0);
+      setAssignedTurnsTotal(assigned);
+      setEditedTurns(assigned); // por defecto mostramos la suma; al editar escogeremos budget individual
 
-      setAssignedTurns(turns);   // valor real
-      setEditedTurns(turns);     // valor editable
-
+      // Si el backend devuelve información por presupuesto (opcional), podemos inicializar selectedBudgetWithValue
+      // pero por simplicidad usamos selectedBudgetForEdit (ya seteado al primero).
+    } catch (err) {
+      console.error('Error cargando detalle de comisiones', err);
+      // limpiar estados en error
+      setCategories([]);
+      setSales([]);
+      setTotals(null);
+      setBudgetInfo(null);
+      setAssignedTurnsTotal(0);
+      setEditedTurns(0);
     } finally {
       setLoading(false);
     }
   };
 
-  const moneyUSD = (v:number) =>
-    new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(v||0);
-const moneyCOP = (v:number) =>
-  new Intl.NumberFormat('es-CO',{
-    style:'currency',
-    currency:'COP',
-    maximumFractionDigits: 0
-  }).format(v||0);
-
+  // helper para formatear dinero
+  const moneyUSD = (v: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(v || 0);
+  const moneyCOP = (v: number) =>
+    new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(v || 0);
 
   /* ================= KPIs ================= */
-const totalSalesUsd = Array.isArray(categories)
-  ? categories.reduce((s,c)=>s+Number(c.sales_sum_usd||0),0)
-  : 0;
+  const totalSalesUsd = Array.isArray(categories)
+    ? categories.reduce((s, c) => s + Number(c.sales_sum_usd || 0), 0)
+    : 0;
 
-const totalCommissionUsd =
-  Number(totals?.total_commission_cop || 0) /
-  Number(totals?.avg_trm || 1);
-
+  const totalCommissionUsd =
+    Number(totals?.total_commission_cop || 0) / Number(totals?.avg_trm || 1);
 
   /* ================= CATEGORY DATA ================= */
-  const categoryCards = categories.map((c:any) => {
+  const categoryCards = categories.map((c: any) => {
     const sales = Number(c.sales_sum_usd || 0);
-    const ppto  = Number(c.category_budget_usd_for_user || 0);
-    const diff  = sales - ppto;
-    const pct   = Number(c.pct_user_of_category_budget || 0);
+    const ppto = Number(c.category_budget_usd_for_user || 0);
+    const diff = sales - ppto;
+    const pct = Number(c.pct_user_of_category_budget || 0);
 
     return {
       code: c.classification_code,
@@ -134,57 +158,31 @@ const totalCommissionUsd =
     };
   });
 
-const saveAssignedTurns = async () => {
-  if (!budgetId || !userId) return;
+  /**
+   * Guardar turnos para el presupuesto seleccionado (el endpoint espera un budgetId individual)
+   * Si el usuario seleccionó varios budgets, debe escoger en el select cuál editar.
+   */
+  const saveAssignedTurns = async () => {
+    if (!selectedBudgetForEdit || !userId) return;
 
-  setSavingTurns(true);
-  try {
-    await api.post(
-      `/commissions/assign-turns/${userId}/${budgetId}`,
-      { assigned_turns: editedTurns }
-    );
+    setSavingTurns(true);
+    try {
+      await api.post(`/commissions/assign-turns/${userId}/${selectedBudgetForEdit}`, {
+        assigned_turns: Number(editedTurns)
+      });
 
-
-    // 🔥 CLAVE: recargar datos desde backend
-    await load();
-
-  } catch (e) {
-    console.error(e);
-    alert('Error al guardar los turnos');
-  } finally {
-    setSavingTurns(false);
-  }
-  console.log(assignedTurns)
-};
-const downloadExcel = async () => {
-  try {
-    const res = await api.get(
-      `/commissions/by-seller/${userId}/export`,
-      {
-        params: { budget_id: budgetId },
-        responseType: 'blob'
-      }
-    );
-
-    const blob = new Blob(
-      [res.data],
-      { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
-    );
-
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `commission_detail_${userName}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-  } catch (e) {
-    console.error(e);
-    alert('Error al descargar Excel');
-  }
-};
-
+      // recargar datos para reflejar cambios
+      await load();
+      // retroalimentación simple
+      // (podrías mostrar toast en lugar de alert)
+      // alert('Turnos actualizados');
+    } catch (e) {
+      console.error(e);
+      alert('Error al guardar los turnos');
+    } finally {
+      setSavingTurns(false);
+    }
+  };
 
   /* ================= SALES FILTER ================= */
   const filteredSales = useMemo(() => {
@@ -200,60 +198,78 @@ const downloadExcel = async () => {
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
 
       <div className="relative bg-gray-50 rounded-2xl shadow-2xl w-11/12 lg:w-5/6 p-6 overflow-auto max-h-[92vh]">
-
         {/* HEADER */}
         <div className="flex justify-between items-start mb-8">
-          <button
-  onClick={downloadExcel}
-  className="px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 text-sm"
->
-  Exportar Excel
-</button>
-
           <div>
             <div className="text-xs text-gray-500">Detalle de comisiones</div>
             <h2 className="text-2xl font-bold">{userName}</h2>
-            {budget && (
+            {budgetInfo && (
               <div className="text-xs text-gray-400 mt-1">
-                Periodo {budget.start_date} → {budget.end_date}
+                {/* si backend devuelve nombre/periodo multi, lo mostramos.
+                    budgetInfo puede ser un objeto con ids/name/start_date/end_date */}
+                {budgetInfo.name ? `Presupuestos: ${budgetInfo.name}` : `Presupuestos: ${budgetIds.join(', ')}`}
+                {budgetInfo.start_date && budgetInfo.end_date ? ` — ${budgetInfo.start_date} → ${budgetInfo.end_date}` : null}
+              </div>
+            )}
+            {!budgetInfo && (
+              <div className="text-xs text-gray-400 mt-1">
+                Presupuestos: {budgetIds.join(', ')}
               </div>
             )}
           </div>
+
           <button onClick={onClose} className="text-gray-400 hover:text-gray-800 text-xl">✕</button>
         </div>
+
         {/* TURNOS */}
-<div className="bg-white rounded-xl shadow border p-4 mb-8">
-  <div className="flex items-center justify-between">
-    <div>
-      <div className="text-xs text-gray-500">Turnos asignados</div>
-      <div className="text-lg font-semibold">{assignedTurns}</div>
-    </div>
+        <div className="bg-white rounded-xl shadow border p-4 mb-8">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div>
+              <div className="text-xs text-gray-500">Turnos asignados (suma)</div>
+              <div className="text-lg font-semibold">{assignedTurnsTotal}</div>
+              <div className="text-xs text-gray-400 mt-1">Sumatoria en los presupuestos seleccionados</div>
+            </div>
 
-    <div className="flex items-center gap-2">
-      <input
-        type="number"
-        min={0}
-        value={editedTurns}
-        onChange={e => setEditedTurns(Number(e.target.value))}
-        className="w-24 border rounded-lg px-3 py-2 text-sm"
-      />
+            <div className="flex flex-col sm:flex-row items-center gap-3">
+              <div className="text-xs text-gray-500">Editar turnos por presupuesto</div>
 
+              <select
+                value={selectedBudgetForEdit ?? ''}
+                onChange={e => {
+                  const id = e.target.value ? Number(e.target.value) : null;
+                  setSelectedBudgetForEdit(id);
+                  // por falta de endpoint con valor por presupuesto, dejamos editedTurns con el total (y usuario lo ajusta)
+                  // alternativamente, podrías implementar una llamada para traer turnos por budget si existe API.
+                }}
+                className="border rounded-lg px-3 py-2 text-sm bg-white"
+              >
+                {budgetIds.map(bid => (
+                  <option key={bid} value={bid}>
+                    {`Budget ${bid}`}
+                  </option>
+                ))}
+              </select>
 
-      <button
-        onClick={saveAssignedTurns}
-        disabled={savingTurns}
-        className={`px-4 py-2 rounded-lg text-sm font-medium ${
-          savingTurns
-            ? 'bg-gray-300 text-gray-600'
-            : 'bg-indigo-600 text-white hover:bg-indigo-700'
-        }`}
-      >
-        {savingTurns ? 'Guardando…' : 'Guardar'}
-      </button>
-    </div>
-  </div>
-</div>
+              <input
+                type="number"
+                min={0}
+                value={editedTurns}
+                onChange={e => setEditedTurns(Number(e.target.value))}
+                className="w-28 border rounded-lg px-3 py-2 text-sm"
+              />
 
+              <button
+                onClick={saveAssignedTurns}
+                disabled={savingTurns || !selectedBudgetForEdit}
+                className={`px-4 py-2 rounded-lg text-sm font-medium ${
+                  savingTurns ? 'bg-gray-300 text-gray-600' : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                }`}
+              >
+                {savingTurns ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
 
         {loading ? (
           <div className="p-16 text-center text-gray-500">Cargando información…</div>
@@ -262,12 +278,12 @@ const downloadExcel = async () => {
             {/* KPI CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mb-10">
               <KpiCard label="Ventas USD" value={moneyUSD(totalSalesUsd)} icon="💰" />
-              <KpiCard label="PPTO USD" value={moneyUSD(userBudgetUsd)} icon="🎯" />
+              <KpiCard label="PPTO USD (usuario)" value={moneyUSD(userBudgetUsd)} icon="🎯" />
               <KpiCard label="Comisión USD" value={moneyUSD(totalCommissionUsd)} icon="🏆" />
               <KpiCard
                 label="Comisión COP"
                 value={moneyCOP(totals?.total_commission_cop)}
-                sub={`TRM ${Number(totals?.avg_trm||0).toFixed(2)}`}
+                sub={`TRM ${Number(totals?.avg_trm || 0).toFixed(2)}`}
                 icon="🇨🇴"
               />
             </div>
@@ -277,22 +293,14 @@ const downloadExcel = async () => {
               <h3 className="text-lg font-semibold">Desempeño por categoría</h3>
               <div className="flex gap-2">
                 <button
-                  onClick={()=>setCategoryView('cards')}
-                  className={`px-3 py-1.5 rounded text-sm ${
-                    categoryView==='cards'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-200 text-gray-700'
-                  }`}
+                  onClick={() => setCategoryView('cards')}
+                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'cards' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}
                 >
                   Cards
                 </button>
                 <button
-                  onClick={()=>setCategoryView('table')}
-                  className={`px-3 py-1.5 rounded text-sm ${
-                    categoryView==='table'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-gray-200 text-gray-700'
-                  }`}
+                  onClick={() => setCategoryView('table')}
+                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'table' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}
                 >
                   Tabla
                 </button>
@@ -303,26 +311,16 @@ const downloadExcel = async () => {
             {categoryView === 'cards' ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-12">
                 {categoryCards.map(c => {
-                  const status =
-                    c.pct >= 100 ? 'success' :
-                    c.pct >= 90  ? 'warning' : 'danger';
-
+                  const status = c.pct >= 100 ? 'success' : c.pct >= 90 ? 'warning' : 'danger';
                   return (
                     <div key={c.code} className="bg-white rounded-2xl shadow border p-4 relative">
-                      <div className={`absolute top-0 left-0 h-1 w-full rounded-t-2xl ${
-                        status === 'success' ? 'bg-green-500'
-                        : status === 'warning' ? 'bg-yellow-500'
-                        : 'bg-red-500'
-                      }`} />
-
+                      <div className={`absolute top-0 left-0 h-1 w-full rounded-t-2xl ${status === 'success' ? 'bg-green-500' : status === 'warning' ? 'bg-yellow-500' : 'bg-red-500'}`} />
                       <div className="flex justify-between mb-3">
                         <div>
                           <div className="font-semibold">{c.name}</div>
                           <div className="text-xs text-gray-500">% Comisión {c.appliedPct.toFixed(2)}%</div>
                         </div>
-                        <div className="text-right font-bold text-green-600">
-                          {moneyUSD(c.commissionUsd)}
-                        </div>
+                        <div className="text-right font-bold text-green-600">{moneyUSD(c.commissionUsd)}</div>
                       </div>
 
                       <div className="mb-3">
@@ -331,13 +329,7 @@ const downloadExcel = async () => {
                           <span className="font-semibold">{c.pct.toFixed(1)}%</span>
                         </div>
                         <div className="w-full bg-gray-200 h-2 rounded">
-                          <div
-                            className={`h-2 rounded ${
-                              status==='success'?'bg-green-500':
-                              status==='warning'?'bg-yellow-500':'bg-red-500'
-                            }`}
-                            style={{ width:`${Math.min(100,c.pct)}%` }}
-                          />
+                          <div className={`h-2 rounded ${status === 'success' ? 'bg-green-500' : status === 'warning' ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(100, c.pct)}%` }} />
                         </div>
                       </div>
 
@@ -347,9 +339,7 @@ const downloadExcel = async () => {
                         <span className="text-gray-500">PPTO</span>
                         <span className="text-right">{moneyUSD(c.ppto)}</span>
                         <span className="text-gray-500">Dif.</span>
-                        <span className={`text-right font-medium ${c.diff>=0?'text-green-600':'text-red-600'}`}>
-                          {c.diff>=0?'+':''}{moneyUSD(c.diff)}
-                        </span>
+                        <span className={`text-right font-medium ${c.diff >= 0 ? 'text-green-600' : 'text-red-600'}`}>{c.diff >= 0 ? '+' : ''}{moneyUSD(c.diff)}</span>
                       </div>
                     </div>
                   );
@@ -370,19 +360,15 @@ const downloadExcel = async () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {categoryCards.map(c=>(
+                    {categoryCards.map(c => (
                       <tr key={c.code} className="border-t">
                         <td className="p-3">{c.name}</td>
                         <td className="p-3 text-right">{moneyUSD(c.ppto)}</td>
                         <td className="p-3 text-right">{moneyUSD(c.sales)}</td>
-                        <td className={`p-3 text-right ${c.diff>=0?'text-green-600':'text-red-600'}`}>
-                          {c.diff>=0?'+':''}{moneyUSD(c.diff)}
-                        </td>
+                        <td className={`p-3 text-right ${c.diff >= 0 ? 'text-green-600' : 'text-red-600'}`}>{c.diff >= 0 ? '+' : ''}{moneyUSD(c.diff)}</td>
                         <td className="p-3 text-right">{c.pct.toFixed(1)}%</td>
                         <td className="p-3 text-right">{c.appliedPct.toFixed(2)}%</td>
-                        <td className="p-3 text-right font-semibold text-green-600">
-                          {moneyUSD(c.commissionUsd)}
-                        </td>
+                        <td className="p-3 text-right font-semibold text-green-600">{moneyUSD(c.commissionUsd)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -394,23 +380,14 @@ const downloadExcel = async () => {
             <h3 className="text-lg font-semibold mb-3">Detalle de ventas</h3>
 
             <div className="flex gap-2 mb-4">
-              <select
-                value={filterCat}
-                onChange={e=>setFilterCat(e.target.value)}
-                className="border rounded-lg px-3 py-2 text-sm bg-white"
-              >
+              <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
                 <option value="ALL">Todas las categorías</option>
-                {categoryCards.map(c=>(
+                {categoryCards.map(c => (
                   <option key={c.code} value={c.code}>{c.name}</option>
                 ))}
               </select>
 
-              <input
-                value={search}
-                onChange={e=>setSearch(e.target.value)}
-                placeholder="Buscar producto o folio…"
-                className="border rounded-lg px-3 py-2 text-sm flex-1"
-              />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar producto o folio…" className="border rounded-lg px-3 py-2 text-sm flex-1" />
             </div>
 
             {/* SALES TABLE */}
@@ -427,17 +404,15 @@ const downloadExcel = async () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSales.map(s=>(
+                  {filteredSales.map(s => (
                     <tr key={`${s.folio}-${s.sale_date}`} className="border-t hover:bg-gray-50">
                       <td className="p-3">{s.sale_date}</td>
                       <td className="p-3">{s.product || s.folio}</td>
                       <td className="p-3 text-right">{moneyUSD(s.value_usd)}</td>
                       <td className="p-3 text-right">{moneyCOP(s.amount_cop)}</td>
-                      <td className="p-3 text-right font-semibold">{moneyCOP(s.commission_amount)}</td>
+                      <td className="p-3 text-right font-semibold">{moneyCOP(s.commission_amount || 0)}</td>
                       <td className="p-3 text-center">
-                        <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs">
-                            Provisional
-                        </span>
+                        <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs">Provisional</span>
                       </td>
                     </tr>
                   ))}
@@ -452,9 +427,7 @@ const downloadExcel = async () => {
 }
 
 /* ================= KPI CARD ================= */
-function KpiCard({ label, value, sub, icon }:{
-  label:string; value:string; sub?:string; icon:string
-}) {
+function KpiCard({ label, value, sub, icon }: { label: string; value: string; sub?: string; icon: string }) {
   return (
     <div className="bg-white rounded-2xl shadow border p-4">
       <div className="flex justify-between mb-1">
