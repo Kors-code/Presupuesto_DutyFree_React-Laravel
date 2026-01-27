@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\BudgetController;
 use App\Http\Controllers\SalesByUserController;
 use App\Http\Controllers\Api\BudgetProgressController;
 use App\Http\Controllers\Api\CommissionActionController;
+use App\Http\Controllers\Api\TurnsImportController;
 
 
 
@@ -23,12 +24,19 @@ Route::get('/v1/ping', function () {
     return response()->json([
         'status' => 'ok',
         'message' => 'API funcionando correctamente',
-    ]);
-});
+        ]);
+        });
+        
+        Route::prefix('v1')->group(function () {
+    // TURNOS (poner primero para evitar conflicto con imports/{id})
+    Route::post('import-turns', [TurnsImportController::class, 'import']);
+    Route::get('imports/turns', [TurnsImportController::class, 'index']);
+    Route::get('imports/turns/{id}', [TurnsImportController::class, 'show']);
+    Route::delete('imports/turns/{id}', [TurnsImportController::class, 'deleteBatch']);
+    Route::delete('imports/turns', [TurnsImportController::class, 'bulkDelete']);
 
-Route::prefix('v1')->group(function () {
-    
-    // USERS & ROLES
+            
+            // USERS & ROLES
     Route::get('users', [UserController::class, 'index']);
     Route::post('users/{id}/assign-role', [UserController::class, 'assignRole']);
     Route::get('roles', [RoleController::class, 'index']);
@@ -101,5 +109,5 @@ Route::prefix('v1')->group(function () {
 );
 
 
-
 });
+

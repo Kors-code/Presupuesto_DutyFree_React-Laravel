@@ -16,21 +16,32 @@ class CategoryCommissionController extends Controller
     {
         $roleId = $request->query('role_id');
 
+        $budget_id = $request->query('budget_id');
+        
+        $CODIGOS_OMITIR = ['10','11','12','98'];
+
         $categories = Category::select('id','classification_code as code','name','description')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->reject(function ($c) use ($CODIGOS_OMITIR) {
+            return in_array((string)$c->code, $CODIGOS_OMITIR);
+        })
+        ->values(); 
 
         // load commissions for those categories for role (if provided) in one query
         $commissions = [];
         if ($roleId) {
             $rows = CategoryCommission::whereIn('category_id',$categories->pluck('id')->toArray())
-                ->where('role_id', $roleId)->get();
+            ->where('role_id', $roleId)
+            ->where('budget_id', $budget_id)->get();
             $commissions = $rows->keyBy('category_id');
         } else {
             // optionally load default role? for now load no commissions
         }
 
+
         $payload = $categories->map(function($c) use ($commissions) {
+            
             $r = $commissions[$c->id] ?? null;
            return [
                 'category_id' => $c->id,
@@ -41,7 +52,8 @@ class CategoryCommissionController extends Controller
                 'commission_percentage' => $r ? (float)$r->commission_percentage : null,
                 'commission_percentage100' => $r ? (float)$r->commission_percentage100 : null,
                 'commission_percentage120' => $r ? (float)$r->commission_percentage120 : null,
-                'min_pct_to_qualify' => $r ? (float)$r->min_pct_to_qualify : null,
+                'participation_pct' => $r ? (float)$r->participation_pct : null,
+                'budget_id' => $r ? (float)$r->budget_id : null,
             ];
 
         });
@@ -58,21 +70,28 @@ class CategoryCommissionController extends Controller
         'commission_percentage' => ['nullable','numeric','min:0'],
         'commission_percentage100' => ['nullable','numeric','min:0'],
         'commission_percentage120' => ['nullable','numeric','min:0'],
-        'min_pct_to_qualify' => ['nullable','numeric','min:0','max:100'],
+        'participation_pct' => ['nullable','numeric','min:0','max:100'],
+        'budget_id' => ['nullable','integer','exists:budgets,id'],
+
     ]);
 
 
         DB::beginTransaction();
         try {
-            $row = CategoryCommission::updateOrCreate(
-                ['category_id' => $data['category_id'], 'role_id' => $data['role_id']],
-                [
-                    'commission_percentage' => $data['commission_percentage'] ?? 0,
-                    'commission_percentage100' => $data['commission_percentage100'] ?? 0,
-                    'commission_percentage120' => $data['commission_percentage120'] ?? 0,
-                    'min_pct_to_qualify' => $data['min_pct_to_qualify'] ?? 80,
-                ]
-            );
+                $row = CategoryCommission::updateOrCreate(
+            [
+                'category_id' => $data['category_id'],
+                'role_id' => $data['role_id'],
+                'budget_id' => $data['budget_id'] ?? null
+            ],
+            [
+                'commission_percentage' => $data['commission_percentage'] ?? 0,
+                'commission_percentage100' => $data['commission_percentage100'] ?? 0,
+                'commission_percentage120' => $data['commission_percentage120'] ?? 0,
+                'participation_pct' => $data['participation_pct'] ?? 10,
+            ]
+        );
+
 
 
             DB::commit();
@@ -102,22 +121,27 @@ public function bulkUpdate(Request $request)
         'items.*.commission_percentage' => ['nullable','numeric','min:0'],
         'items.*.commission_percentage100' => ['nullable','numeric','min:0'],
         'items.*.commission_percentage120' => ['nullable','numeric','min:0'],
-        'items.*.min_pct_to_qualify' => ['nullable','numeric','min:0','max:100'],
+        'items.*.participation_pct' => ['nullable','numeric','min:0','max:100'],
+        'items.*.budget_id' => ['nullable','integer','exists:budgets,id'],
     ]);
 
     DB::beginTransaction();
 
     foreach ($payload['items'] as $it) {
         CategoryCommission::updateOrCreate(
-            ['category_id' => $it['category_id'], 'role_id' => $payload['role_id']],
-            [
-                'commission_percentage' => $it['commission_percentage'] ?? 0,
-                'commission_percentage100' => $it['commission_percentage100'] ?? 0,
-                'commission_percentage120' => $it['commission_percentage120'] ?? 0,
-                'min_pct_to_qualify' => $it['min_pct_to_qualify'] ?? 80,
-            ]
+        [
+            'category_id' => $it['category_id'],
+            'role_id' => $payload['role_id'],
+            'budget_id' => $it['budget_id'] ?? null
+        ],
+        [
+            'commission_percentage' => $it['commission_percentage'] ?? 0,
+            'commission_percentage100' => $it['commission_percentage100'] ?? 0,
+            'commission_percentage120' => $it['commission_percentage120'] ?? 0,
+            'participation_pct' => $it['participation_pct'] ?? 10,
+        ]
+    );
 
-        );
     }
 
     DB::commit();

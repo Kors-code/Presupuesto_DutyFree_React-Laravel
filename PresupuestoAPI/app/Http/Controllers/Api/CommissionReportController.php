@@ -7,7 +7,6 @@ use App\Models\Budget;
 use App\Models\Sale;
 use App\Models\User;
 use App\Models\Category;
-use App\Models\CategoryCommission;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -16,7 +15,7 @@ use Carbon\Carbon;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Exports\CommissionReportExport;
 use App\Exports\CommissionSellerDetailExport;
-
+use App\Imports\AssignTurnsImport;
 class CommissionReportController extends Controller
 {
     // fallback total turns
@@ -60,14 +59,14 @@ class CommissionReportController extends Controller
     {
         return match ($code) {
             '19' => 'Gifts',
-            '14' => 'Joyeria',
-            '15' => 'Gafas',
-            '16' => 'Chocolates',
+            '15' => 'Joyeria',
+            '16' => 'Gafas',
+            '22' => 'Chocolates',
             '18' => 'Licores',
             self::FRAG_KEY => 'Fragancias',
             '13' => 'Skin care',
             '17' => 'Tabaco',
-            '22' => 'Relojes',
+            '14' => 'Relojes',
             '21' => 'Electrónicos',
             default => strtoupper($code),
         };
@@ -128,33 +127,30 @@ class CommissionReportController extends Controller
      */
     public function bySeller(Request $request)
     {
+        // Accept either budget_ids[] (array) or budget_id (single)
         $budgetIds = $request->query('budget_ids');
-
         if (!$budgetIds) {
             $single = $request->query('budget_id');
             $budgetIds = $single ? [$single] : [];
         }
 
-        $budgetIds = array_map('intval', (array)$budgetIds);
+        // normalize to ints & filter empties
+        $budgetIds = array_values(array_filter(array_map('intval', (array)$budgetIds)));
 
         if (empty($budgetIds)) {
             abort(422, 'Debe seleccionar al menos un presupuesto');
         }
 
-        $budgets = DB::table('budgets')
-            ->whereIn('id', $budgetIds)
-            ->orderBy('start_date')
-            ->get();
-
+        // Use Eloquent for budgets so we have consistent fields
+        $budgets = Budget::whereIn('id', $budgetIds)->orderBy('start_date')->get();
         abort_if($budgets->isEmpty(), 404, 'Presupuestos no encontrados');
 
-        // Determine single vs multi budget and sensible fallbacks
         $isSingleBudget = count($budgetIds) === 1;
-        $budget = $isSingleBudget ? Budget::find($budgetIds[0]) : null;
+        $singleBudget = $isSingleBudget ? $budgets->first() : null;
 
         // total turns: prefer single budget value, otherwise sum budgets or fallback
         $totalTurns = $isSingleBudget
-            ? ($budget->total_turns ?? $this->TOTAL_TURNS)
+            ? ($singleBudget->total_turns ?? $this->TOTAL_TURNS)
             : ($budgets->sum('total_turns') ?: $this->TOTAL_TURNS);
 
         $roleName = $request->query('role_name');
@@ -162,7 +158,7 @@ class CommissionReportController extends Controller
         $startDate = $budgets->min('start_date');
         $endDate   = $budgets->max('end_date');
 
-        // --- AGGREGATED SUBQUERIES FOR PERFORMANCE ---
+        // aggregated subqueries
         $butTotalsSub = DB::table('budget_user_totals')
             ->selectRaw('user_id,
                          COALESCE(SUM(total_sales_cop),0) as total_sales_cop,
@@ -214,12 +210,13 @@ class CommissionReportController extends Controller
             $participationByCode[$key] += (float)($c->participation_pct ?? 0.0);
         }
 
-        // --- aggregated category totals for the budgets (global across users) ---
-        $categoryTotals = DB::table('budget_user_category_totals')
+        // aggregated category totals for the budgets (global across users)
+        $categoryTotalsQuery = DB::table('budget_user_category_totals')
             ->selectRaw("category_group AS classification, SUM(sales_usd) AS sales_usd, SUM(sales_cop) AS sales_cop, SUM(commission_cop) AS commission_cop")
             ->whereIn('budget_user_category_totals.budget_id', $budgetIds)
-            ->groupBy('category_group')
-            ->get();
+            ->groupBy('category_group');
+
+        $categoryTotals = $categoryTotalsQuery->get();
 
         $categoriesSummary = [];
         foreach ($categoryTotals as $r) {
@@ -265,21 +262,23 @@ class CommissionReportController extends Controller
         $folioRaw = "COALESCE(sales.folio, CONCAT('folio_null_', DATE(sales.sale_date), '_', COALESCE(sales.pdv, '')))";
         $budgetIdsForSales = $budgetIds;
 
-        $ticketRows = Sale::selectRaw("sales.seller_id, {$folioRaw} AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, SUM(COALESCE(sales.quantity,1)) AS units_count")
-            ->whereBetween('sales.sale_date', [$startDate, $endDate])
-            ->when(Schema::hasColumn('sales','budget_id'), function ($q) use ($budgetIdsForSales) {
-                return $q->whereIn('sales.budget_id', $budgetIdsForSales);
-            })
-            ->groupBy('sales.seller_id', DB::raw($folioRaw))
-            ->get();
+        $ticketRowsQuery = Sale::selectRaw("sales.seller_id, {$folioRaw} AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, SUM(COALESCE(sales.quantity,1)) AS units_count")
+            ->whereBetween('sales.sale_date', [$startDate, $endDate]);
 
-        $globalTicketRows = Sale::selectRaw("{$folioRaw} AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, SUM(COALESCE(sales.quantity,1)) AS units_count")
-            ->whereBetween('sales.sale_date', [$startDate, $endDate])
-            ->when(Schema::hasColumn('sales','budget_id'), function ($q) use ($budgetIdsForSales) {
-                return $q->whereIn('sales.budget_id', $budgetIdsForSales);
-            })
-            ->groupBy(DB::raw($folioRaw))
-            ->get();
+        if (Schema::hasColumn('sales','budget_id') && !empty($budgetIdsForSales)) {
+            $ticketRowsQuery->whereIn('sales.budget_id', $budgetIdsForSales);
+        }
+
+        $ticketRows = $ticketRowsQuery->groupBy('sales.seller_id', DB::raw($folioRaw))->get();
+
+        $globalTicketRowsQuery = Sale::selectRaw("{$folioRaw} AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, SUM(COALESCE(sales.quantity,1)) AS units_count")
+            ->whereBetween('sales.sale_date', [$startDate, $endDate]);
+
+        if (Schema::hasColumn('sales','budget_id') && !empty($budgetIdsForSales)) {
+            $globalTicketRowsQuery->whereIn('sales.budget_id', $budgetIdsForSales);
+        }
+
+        $globalTicketRows = $globalTicketRowsQuery->groupBy(DB::raw($folioRaw))->get();
 
         // aggregate tickets by seller
         $ticketsBySeller = [];
@@ -389,12 +388,15 @@ class CommissionReportController extends Controller
         if ($rows->isNotEmpty()) {
             $userIds = $rows->pluck('user_id')->unique()->values()->all();
 
-            $saleDatesPerUser = Sale::query()
+            $saleDatesPerUserQuery = Sale::query()
                 ->whereIn('seller_id', $userIds)
-                ->whereBetween('sale_date', [$startDate, $endDate])
-                ->when(Schema::hasColumn('sales','budget_id'), function ($q) use ($budgetIds) {
-                    return $q->whereIn('sales.budget_id', $budgetIds);
-                })
+                ->whereBetween('sale_date', [$startDate, $endDate]);
+
+            if (Schema::hasColumn('sales','budget_id') && !empty($budgetIds)) {
+                $saleDatesPerUserQuery->whereIn('sales.budget_id', $budgetIds);
+            }
+
+            $saleDatesPerUser = $saleDatesPerUserQuery
                 ->select('seller_id', 'sale_date')
                 ->distinct()
                 ->get()
@@ -455,13 +457,16 @@ class CommissionReportController extends Controller
                 $r->total_commission_usd = $commissionUsd;
                 return $r;
             });
-
         }
 
         // global progress based on Sale totals (USD)
         $totalUsdQuery = Sale::query()
             ->whereBetween('sale_date', [$startDate, $endDate]);
-        if (Schema::hasColumn('sales', 'budget_id')) $totalUsdQuery->whereIn('sales.budget_id', $budgetIds);
+
+        if (Schema::hasColumn('sales', 'budget_id') && !empty($budgetIds)) {
+            $totalUsdQuery->whereIn('sales.budget_id', $budgetIds);
+        }
+
         $totalUsd = $totalUsdQuery->sum(DB::raw('COALESCE(value_usd,0)'));
 
         // For global pct computations use aggregated target amount (multi) or single budget target
@@ -480,10 +485,18 @@ class CommissionReportController extends Controller
             ->whereIn('budget_id', $budgetIds)
             ->sum('total_commission_cop');
 
+        // Prefer commission USD derived from category-level commission_usd if present
         $totalCommissionUsd = null;
-        if ($totalCommissionCop > 0 && $totalUsd > 0) {
-            $trmGlobal = $totalCopGlobal > 0 ? ($totalCopGlobal / $totalUsd) : null;
-            if ($trmGlobal && $trmGlobal > 0) $totalCommissionUsd = round($totalCommissionCop / $trmGlobal, 2);
+        try {
+            $sumFromCategories = collect($categoriesSummary)->sum('commission_usd');
+            if ($sumFromCategories > 0) {
+                $totalCommissionUsd = round($sumFromCategories, 2);
+            } elseif ($totalCommissionCop > 0 && $totalUsd > 0 && $totalCopGlobal > 0) {
+                $trmGlobal = $totalCopGlobal > 0 ? ($totalCopGlobal / $totalUsd) : null;
+                if ($trmGlobal && $trmGlobal > 0) $totalCommissionUsd = round($totalCommissionCop / $trmGlobal, 2);
+            }
+        } catch (\Throwable $e) {
+            $totalCommissionUsd = null;
         }
 
         return response()->json([
@@ -524,27 +537,28 @@ class CommissionReportController extends Controller
      */
     public function bySellerDetail(Request $request, $userId)
     {
-        // Accept either budget_ids (array) or budget_id (single)
+        // Accept either budget_ids[] (array) or budget_id (single)
         $budgetIds = $request->query('budget_ids');
-
         if (!$budgetIds) {
             $single = $request->query('budget_id');
             $budgetIds = $single ? [$single] : [];
         }
 
-        $budgetIds = array_map('intval', (array)$budgetIds);
+        // normalize to ints & filter empties
+        $budgetIds = array_values(array_filter(array_map('intval', (array)$budgetIds)));
 
         if (empty($budgetIds)) {
             abort(422, 'Debe seleccionar al menos un presupuesto');
         }
 
-        $budgets = Budget::whereIn('id', $budgetIds)->get();
+        $budgets = Budget::whereIn('id', $budgetIds)->orderBy('start_date')->get();
+        abort_if($budgets->isEmpty(), 404, 'Presupuestos no encontrados');
 
         $startDate = $budgets->min('start_date');
         $endDate   = $budgets->max('end_date');
 
         // Sales rows for the user (no per-sale commission stored in this fast-mode)
-        $sales = Sale::select(
+        $salesQuery = Sale::select(
                 'sales.id as sale_id',
                 'sales.sale_date',
                 'sales.folio',
@@ -552,28 +566,34 @@ class CommissionReportController extends Controller
                 'products.description as product',
                 'products.classification as category_code',
                 'products.classification_desc as category_desc',
+                'products.brand as brand',          
+                'products.provider_name as provider',
                 'sales.amount_cop',
                 'sales.value_usd',
                 'sales.exchange_rate'
             )
             ->leftJoin('products', 'sales.product_id', '=', 'products.id')
             ->where('sales.seller_id', $userId)
-            ->whereBetween('sales.sale_date', [$startDate, $endDate])
-            ->when(Schema::hasColumn('sales','budget_id'), function ($q) use ($budgetIds) {
-                return $q->whereIn('sales.budget_id', $budgetIds);
-            })
-            ->orderBy('sales.sale_date')
-            ->get();
+            ->whereBetween('sales.sale_date', [$startDate, $endDate]);
+
+        if (Schema::hasColumn('sales','budget_id') && !empty($budgetIds)) {
+            $salesQuery->whereIn('sales.budget_id', $budgetIds);
+        }
+
+        $sales = $salesQuery->orderBy('sales.sale_date')->get();
 
         $saleDates = $sales->pluck('sale_date')->unique()->values()->all();
 
         // user tickets (group by folio)
-        $userTicketRows = Sale::selectRaw("COALESCE(sales.folio, CONCAT('folio_null_', DATE(sales.sale_date), '_', COALESCE(sales.pdv, ''))) AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, COUNT(*) AS lines_count, SUM(COALESCE(sales.quantity,1)) AS units_count, MIN(sales.sale_date) AS sale_date")
+        $userTicketRowsQuery = Sale::selectRaw("COALESCE(sales.folio, CONCAT('folio_null_', DATE(sales.sale_date), '_', COALESCE(sales.pdv, ''))) AS folio_key, SUM(COALESCE(sales.amount_cop,0)) AS ticket_cop, SUM(COALESCE(sales.value_usd,0)) AS ticket_usd, COUNT(*) AS lines_count, SUM(COALESCE(sales.quantity,1)) AS units_count, MIN(sales.sale_date) AS sale_date")
             ->where('sales.seller_id', $userId)
-            ->whereBetween('sales.sale_date', [$startDate, $endDate])
-            ->when(Schema::hasColumn('sales','budget_id'), function ($q) use ($budgetIds) {
-                return $q->whereIn('sales.budget_id', $budgetIds);
-            })
+            ->whereBetween('sales.sale_date', [$startDate, $endDate]);
+
+        if (Schema::hasColumn('sales','budget_id') && !empty($budgetIds)) {
+            $userTicketRowsQuery->whereIn('sales.budget_id', $budgetIds);
+        }
+
+        $userTicketRows = $userTicketRowsQuery
             ->groupBy(DB::raw("COALESCE(sales.folio, CONCAT('folio_null_', DATE(sales.sale_date), '_', COALESCE(sales.pdv, '')))"))
             ->orderByDesc('ticket_usd')
             ->get();
@@ -603,26 +623,32 @@ class CommissionReportController extends Controller
         // avg trm for user from trms table
         $avgTrmForUser = null;
         if (!empty($saleDates)) {
-            $trmRows = DB::table('trms')->select('date', DB::raw('AVG(value) as avg_value'))->whereIn('date', $saleDates)->groupBy('date')->get();
+            $trmRowsQuery = DB::table('trms')->select('date', DB::raw('AVG(value) as avg_value'));
+            if (!empty($saleDates)) $trmRowsQuery->whereIn('date', $saleDates);
+            $trmRows = $trmRowsQuery->groupBy('date')->get();
+
             $trmValues = [];
             foreach ($trmRows as $t) $trmValues[] = (float)$t->avg_value;
             if (!empty($trmValues)) $avgTrmForUser = round(array_sum($trmValues) / count($trmValues), 2);
         }
 
-        // categories for user from aggregated table
-        $userCategoryRows = DB::table('budget_user_category_totals')
-        ->whereIn('budget_id', $budgetIds)
-        ->where('user_id', $userId)
-        ->selectRaw('
-            category_group,
-            SUM(sales_usd) AS sales_usd,
-            SUM(sales_cop) AS sales_cop,
-            SUM(commission_cop) AS commission_cop,
-            MAX(applied_pct) AS applied_pct
-        ')
-        ->groupBy('category_group')
-        ->get();
+        // categories for user from aggregated table (SUM across selected budgets)
+        $userCategoryRowsQuery = DB::table('budget_user_category_totals')
+            ->whereIn('budget_id', $budgetIds)
+            ->where('user_id', $userId)
+            ->selectRaw('
+                category_group,
+                SUM(sales_usd) AS sales_usd,
+                SUM(sales_cop) AS sales_cop,
+                SUM(commission_cop) AS commission_cop,
+                MAX(applied_pct) AS applied_pct
+            ')
+            ->groupBy('category_group');
 
+        $userCategoryRows = $userCategoryRowsQuery->get();
+
+        // total ventas USD del usuario (para %PART real) - calculado **después** de obtener userCategoryRows
+        $totalSalesUsdUser = $userCategoryRows->sum('sales_usd') ?: 1;
 
         $categoriesSummary = [];
         $categoriesModel = Category::select('id','classification_code','participation_pct')->get();
@@ -636,10 +662,9 @@ class CommissionReportController extends Controller
                 $categoryGroupMap[$group]['participation_pct'] += (float)$c->participation_pct;
             }
         }
-        $totalParticipation = array_sum(
-            array_column($categoryGroupMap, 'participation_pct')
-        ) ?: 100;
 
+        // total participation (suma de participaciones) -> evita divisiones por 0
+        $totalParticipation = array_sum(array_column($categoryGroupMap, 'participation_pct')) ?: 100;
 
         // normalizar claves para que ventas y categorías coincidan
         $normalizedGroup = function ($v) {
@@ -661,34 +686,41 @@ class CommissionReportController extends Controller
         // Build categories summary using the *userBudgetUsd* to compute category budget for user
         foreach ($userCategoryRows as $r) {
             $classification = $normalizedGroup($r->category_group);
-            $participation = $categoryGroupMap[$classification]['participation_pct'] ?? 0.0;
-
-            // Correct per-user category budget: userBudgetUsd * (participation / 100)
-            $categoryBudgetUsdForUser = round(
-                $userBudgetUsd * ($participation / $totalParticipation),
-                2
-            );
 
             $salesUsd = (float)$r->sales_usd;
             $salesCop = (float)$r->sales_cop;
             $commissionCop = (float)$r->commission_cop;
 
+            // participation real del usuario dentro de sus ventas (por categoría)
+            $participationPct =
+                $categoryGroupMap[$classification]['participation_pct'] ?? 0.0;
+
+            $categoryBudgetUsdForUser = round(
+                $userBudgetUsd * ($participationPct / 100),
+                2
+            );
+
             $pctOfCategory = $categoryBudgetUsdForUser > 0 ? round(($salesUsd / $categoryBudgetUsdForUser) * 100, 2) : null;
             $qualifies = $pctOfCategory !== null && $pctOfCategory >= $this->MIN_PCT_TO_QUALIFY;
 
-            // applied commission pct: prefer the stored applied_pct if exists, otherwise fallback to participation
-            $appliedPct = isset($r->applied_pct) ? (float)$r->applied_pct : (float)$participation;
+            // applied commission pct: prefer the stored applied_pct if exists, otherwise fallback to categoryGroupMap participation_pct
+            $appliedPct = isset($r->applied_pct) ? (float)$r->applied_pct : ($categoryGroupMap[$classification]['participation_pct'] ?? 0.0);
 
-            // compute commission in USD if possible:
+            // compute commission USD: commission = sales_usd * (appliedPct / 100)
             $commissionUsd = null;
-            $trmUsed = null;
-            if ($salesUsd > 0 && $salesCop > 0) {
-                $trmUsed = $salesCop / $salesUsd;
-            } elseif (!empty($avgTrmForUser)) {
-                $trmUsed = $avgTrmForUser;
-            }
-            if ($commissionCop > 0 && !empty($trmUsed) && $trmUsed > 0) {
-                $commissionUsd = round($commissionCop / $trmUsed, 2);
+            if ($salesUsd > 0 && $appliedPct > 0) {
+                $commissionUsd = round($salesUsd * ($appliedPct / 100), 2);
+            } else {
+                // fallback: if not enough USD info try COP->USD with trmUsed
+                $trmUsed = null;
+                if ($salesUsd > 0 && $salesCop > 0) {
+                    $trmUsed = $salesCop / $salesUsd;
+                } elseif (!empty($avgTrmForUser)) {
+                    $trmUsed = $avgTrmForUser;
+                }
+                if ($commissionCop > 0 && !empty($trmUsed) && $trmUsed > 0) {
+                    $commissionUsd = round($commissionCop / $trmUsed, 2);
+                }
             }
 
             $categoriesSummary[$classification] = [
@@ -720,19 +752,28 @@ class CommissionReportController extends Controller
             ->whereIn('budget_id', $budgetIds)
             ->where('user_id', $userId)
             ->selectRaw('
-                SUM(total_sales_usd) as total_sales_usd,
-                SUM(total_sales_cop) as total_sales_cop,
-                SUM(total_commission_cop) as total_commission_cop
+                COALESCE(SUM(total_sales_usd),0) as total_sales_usd,
+                COALESCE(SUM(total_sales_cop),0) as total_sales_cop,
+                COALESCE(SUM(total_commission_cop),0) as total_commission_cop
             ')
             ->first();
+
+        // Totals: ensure total_commission_usd computed from category-level commissions when possible
+        $totalCommissionUsdFromCats = 0.0;
+        foreach ($categoriesSummary as $c) {
+            $totalCommissionUsdFromCats += ($c['commission_sum_usd'] ?? 0);
+        }
+        $totalCommissionUsdFromCats = round($totalCommissionUsdFromCats, 2);
 
         $totals = [
             'total_commission_cop' => $userTotals->total_commission_cop ?? 0,
             'total_sales_cop' => $userTotals->total_sales_cop ?? 0,
             'total_sales_usd' => $userTotals->total_sales_usd ?? 0,
             'avg_trm' => $avgTrmForUser,
+            'total_commission_usd' => $totalCommissionUsdFromCats
         ];
 
+        // ensure categories are ordered consistently
         uasort($categoriesSummary, function ($a, $b) {
             return $this->categoryOrder($a['classification_code'])
             <=> $this->categoryOrder($b['classification_code']);
@@ -764,6 +805,7 @@ class CommissionReportController extends Controller
 
     /**
      * assignTurns: update budget_user_turns and refresh the aggregated user totals from category totals (fast).
+     * Note: this endpoint works per single budgetId (same as before).
      */
     public function assignTurns(Request $request, $userId, $budgetId)
     {
@@ -832,15 +874,10 @@ class CommissionReportController extends Controller
         ]);
     }
 
-    /**
-     * Exportar comisiones a Excel (Sellers + Categories) para un presupuesto.
-     */
     public function exportExcel(Request $request)
     {
-        // Reutilizamos la lógica existente: llamamos al reporte rápido (bySeller) y tomamos la payload JSON
         $response = $this->bySeller($request);
 
-        // $response es un JsonResponse; convertimos el contenido a array
         $content = $response->getContent();
         $data = json_decode($content, true);
 
@@ -848,7 +885,6 @@ class CommissionReportController extends Controller
             return response()->json(['message' => 'No hay datos para exportar'], 422);
         }
 
-        // Preparar arrays planos para exportar
         $sellers = [];
         foreach ($data['sellers'] as $s) {
             $sellers[] = [
@@ -881,7 +917,6 @@ class CommissionReportController extends Controller
             ];
         }
 
-        // build filename from budget ids available in payload
         $budgetIdsForFilename = $data['budget']['ids'] ?? [];
         $budgetIdStr = is_array($budgetIdsForFilename) ? implode('_', $budgetIdsForFilename) : (string)$budgetIdsForFilename;
         $budgetIdStr = $budgetIdStr ?: 'unknown';
@@ -894,9 +929,6 @@ class CommissionReportController extends Controller
         ]), $filename);
     }
 
-    /**
-     * Exportar detalle de comisiones por vendedor a Excel.
-     */
     public function exportSellerDetail(Request $request, $userId)
     {
         $response = $this->bySellerDetail($request, $userId);
@@ -908,7 +940,6 @@ class CommissionReportController extends Controller
 
         $avgTrm = $data['totals']['avg_trm'] ?? 1;
 
-        // 🔹 Categorías
         $categories = [];
         foreach ($data['categories'] as $c) {
             $categories[] = [
@@ -923,7 +954,6 @@ class CommissionReportController extends Controller
             ];
         }
 
-        // 🔹 Ventas (comisión calculada igual que frontend)
         $sales = [];
         foreach ($data['sales'] as $s) {
             $cat = collect($data['categories'])->firstWhere(
@@ -961,4 +991,33 @@ class CommissionReportController extends Controller
             $filename
         );
     }
+public function importTurnsByMonth(Request $request)
+{
+    $request->validate([
+        'file' => 'required|file|mimes:xlsx,csv'
+    ]);
+
+    $import = new AssignTurnsByMonthImport();
+    Excel::import($import, $request->file('file'));
+
+    return response()->json([
+        'message' => 'Importación finalizada',
+        'errors' => $import->errors
+    ]);
+}
+public function downloadTurnsTemplateV2()
+{
+    return Excel::download(new class implements \Maatwebsite\Excel\Concerns\FromArray {
+        public function array(): array
+        {
+            return [
+                ['mes', 'codigo_vendedor', 'assigned_turns'],
+                ['2026-01', 'VEND001', 10],
+                ['2026-01', 'VEND002', 15],
+            ];
+        }
+    }, 'plantilla_turnos_por_mes.xlsx');
+}
+
+
 }

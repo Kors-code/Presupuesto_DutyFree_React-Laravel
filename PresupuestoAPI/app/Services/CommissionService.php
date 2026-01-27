@@ -22,14 +22,9 @@ class CommissionService
     const FRAG_CODES = [10, 11, 12];
     protected int $MIN_PCT_TO_QUALIFY = 80;
 
-    /**
-     * Genera comisiones para un presupuesto específico (delegado a processBudget).
-     */
     public function generateForBudget(int $budgetId): array
     {
-        Log::info('[COMMISSION] Starting generation (by budget)', [
-            'budget_id' => $budgetId
-        ]);
+        Log::info('[COMMISSION] Starting generation (by budget)', ['budget_id' => $budgetId]);
 
         $budget = Budget::find($budgetId);
         if (!$budget) {
@@ -40,16 +35,11 @@ class CommissionService
         return $this->processBudget($budget);
     }
 
-    /**
-     * Genera comisiones para el presupuesto activo.
-     */
     public function generateForActiveBudget(): array
     {
         $today = now()->toDateString();
 
-        Log::info('[COMMISSION] Starting generation (active budget)', [
-            'date' => $today
-        ]);
+        Log::info('[COMMISSION] Starting generation (active budget)', ['date' => $today]);
 
         $budget = Budget::where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
@@ -65,7 +55,6 @@ class CommissionService
 
     protected function processBudget(Budget $budget): array
     {
-        // process all users
         $result = $this->processBudgetForUsers($budget, null);
 
         return $result + [
@@ -73,22 +62,15 @@ class CommissionService
         ];
     }
 
-    /**
-     * Procesa un presupuesto, opcionalmente restringido a una lista de usuarios.
-     *
-     * @param Budget $budget
-     * @param int[]|null $onlyUserIds Si null => procesa todos; si array => procesa solo esos usuarios
-     *
-     * @return array (resumen)
-     */
     protected function processBudgetForUsers(Budget $budget, ?array $onlyUserIds = null): array
     {
-        Log::info('[COMMISSION] processBudgetForUsers', [
-            'budget_id' => $budget->id,
-            'onlyUserIds' => $onlyUserIds
-        ]);
+        Log::info('[COMMISSION] processBudgetForUsers', ['budget_id' => $budget->id, 'onlyUserIds' => $onlyUserIds]);
 
-        $totalTurns = $budget->total_turns ?? $this->TOTAL_TURNS;
+        // 1) total turns: prefer budget.total_turns; si no existe, calcular desde budget_user_turns; sino fallback
+        $totalTurns = $budget->total_turns ?? DB::table('budget_user_turns')->where('budget_id', $budget->id)->sum('assigned_turns');
+        if (empty($totalTurns) || $totalTurns <= 0) {
+            $totalTurns = $this->TOTAL_TURNS;
+        }
 
         // total USD and COP to determine provisional (respect budget_id if column exists)
         $totalUsdQuery = Sale::whereBetween('sale_date', [$budget->start_date, $budget->end_date]);
@@ -102,10 +84,7 @@ class CommissionService
         $totalUsd = (float) $totalUsdQuery->sum(DB::raw('COALESCE(value_usd,0)'));
         $totalCop = (float) $totalCopQuery->sum(DB::raw('COALESCE(amount_cop,0)'));
 
-        $pct = $budget->target_amount > 0
-            ? ($totalUsd / $budget->target_amount) * 100
-            : 0;
-
+        $pct = $budget->target_amount > 0 ? ($totalUsd / $budget->target_amount) * 100 : 0;
         $isProvisional = $pct < $this->MIN_PCT_TO_QUALIFY;
 
         Log::info('[COMMISSION] Budget progress', [
@@ -113,12 +92,13 @@ class CommissionService
             'total_sales_cop' => round($totalCop, 2),
             'pct' => round($pct, 2),
             'is_provisional' => $isProvisional,
+            'total_turns' => $totalTurns
         ]);
 
         DB::beginTransaction();
 
         try {
-            // 1) ventas agregadas por seller + grupo (USD + COP)
+            // ventas agregadas por seller + grupo (USD + COP)
             $caseFrag = $this->getSqlClassificationCase();
 
             $salesByUserGroupQuery = Sale::selectRaw("
@@ -154,26 +134,55 @@ class CommissionService
                 ];
             }
 
-            // 2) categories model -> group participation & category ids
-            $categoriesModel = Category::select('id','classification_code','participation_pct')->get();
-            $categoryGroupMap = []; // group => ['category_ids'=>[], 'participation_pct' => sum]
-            foreach ($categoriesModel as $c) {
+            // 2) categories + participation desde category_commissions según budget
+            $categoriesWithParticipation = DB::table('categories as c')
+                ->join('category_commissions as cc', function ($join) use ($budget) {
+                    $join->on('cc.category_id', '=', 'c.id')
+                        ->where('cc.budget_id', $budget->id);
+                })
+                ->select(
+                    'c.id',
+                    'c.classification_code',
+                    DB::raw('MAX(cc.participation_pct) as participation_pct')
+                )
+                ->groupBy('c.id', 'c.classification_code')
+                ->get();
+
+            $categoryGroupMap = []; // group => ['category_ids'=>[], 'participation_pct'=>SUM]
+            foreach ($categoriesWithParticipation as $c) {
                 $grp = $this->normalizeClassification($c->classification_code);
+                $pct = (float)$c->participation_pct;
                 if (!isset($categoryGroupMap[$grp])) {
                     $categoryGroupMap[$grp] = [
                         'category_ids' => [$c->id],
-                        'participation_pct' => (float)$c->participation_pct
+                        'participation_pct' => $pct
                     ];
                 } else {
                     $categoryGroupMap[$grp]['category_ids'][] = $c->id;
-                    $categoryGroupMap[$grp]['participation_pct'] += (float)$c->participation_pct;
+                    $categoryGroupMap[$grp]['participation_pct'] = $pct;
                 }
             }
+            Log::info('[COMMISSION] Category groups', ['categoryGroupMap' => $categoryGroupMap]);
 
-            // 3) obtener assigned_turns de budget_user_turns (NO de users.assigned_turns)
+            // DEBUG ADICIONAL: listar ids y classification_code que mapearon a fragancias
+$fragCategoryIds = [];
+$fragCategoryRaw = [];
+foreach ($categoriesWithParticipation as $c) {
+    $grp = $this->normalizeClassification($c->classification_code);
+    if ($grp === self::FRAG_KEY) {
+        $fragCategoryIds[] = $c->id;
+        $fragCategoryRaw[$c->id] = $c->classification_code;
+    }
+}
+Log::info('[COMMISSION] Frag mapping debug', [
+    'frag_category_ids' => $fragCategoryIds,
+    'frag_category_raw_codes' => $fragCategoryRaw
+]);
+
+
+            // 3) assigned_turns
             $assignedTurnsByUser = [];
             if (!empty($userIds)) {
-                // fetch assigned_turns for these users in this budget
                 $assignedRows = DB::table('budget_user_turns')
                     ->where('budget_id', $budget->id)
                     ->whereIn('user_id', array_keys($userIds))
@@ -184,7 +193,7 @@ class CommissionService
                 }
             }
 
-            // 4) calcular pctUserByGroup [user][group] => ['pct','category_budget_for_user','sales_usd','sales_cop']
+            // 4) pctUserByGroup
             $pctUserByGroup = [];
             foreach ($assignedTurnsByUser as $uid => $assigned) {
                 $userBudgetUsd = $totalTurns > 0 ? round($budget->target_amount * ($assigned / $totalTurns), 2) : 0.0;
@@ -210,13 +219,38 @@ class CommissionService
                 }
             }
 
+            // DEBUG: log resumido para inspección rápida
+            Log::info('[COMMISSION] Debug snapshot', [
+                'users_count' => count($userIds),
+                'sample_userIds' => array_slice(array_keys($userIds), 0, 6),
+                'category_groups' => array_keys($categoryGroupMap),
+                'assignedTurnsByUser_sample' => array_slice($assignedTurnsByUser, 0, 8)
+            ]);
+
             // 5) build ratesByGroupByRole and rules map
-            $allCategoryIds = $categoriesModel->pluck('id')->all();
-            $categoryCommissions = CategoryCommission::whereIn('category_id', $allCategoryIds)->get();
+            $allCategoryIds = collect($categoriesWithParticipation)->pluck('id')->all();
+            if (empty($allCategoryIds)) {
+                // si no hay categories en este budget, no hay nada que hacer
+                Log::warning('[COMMISSION] No categories found for budget', ['budget_id' => $budget->id]);
+                DB::commit();
+                return [
+                    'status' => 'ok',
+                    'users_processed' => 0,
+                    'total_sales_usd' => round($totalUsd, 2),
+                    'total_sales_cop' => round($totalCop, 2),
+                    'pct' => round($pct, 2),
+                    'is_provisional' => $isProvisional,
+                ];
+            }
+
+            // IMPORTANT: filtrar CategoryCommission por budget_id (FIX)
+            $categoryCommissions = CategoryCommission::whereIn('category_id', $allCategoryIds)
+                ->where('budget_id', $budget->id)
+                ->get();
 
             // map category_id -> group
             $categoryIdToGroup = [];
-            foreach ($categoriesModel as $c) {
+            foreach ($categoriesWithParticipation as $c) {
                 $categoryIdToGroup[$c->id] = $this->normalizeClassification($c->classification_code);
             }
 
@@ -248,14 +282,20 @@ class CommissionService
                 }
             }
 
-            // 6) For each user+group compute appliedPct and upsert into budget_user_category_totals
+            // DEBUG: verificación rápida de reglas
+            Log::info('[COMMISSION] Rules snapshot', [
+                'categories_count' => count($allCategoryIds),
+                'category_commissions_count' => $categoryCommissions->count(),
+                'rates_preview' => array_slice($ratesByGroupByRole, 0, 6)
+            ]);
+
+            // 6) compute and upsert
             $usersProcessed = [];
             foreach ($pctUserByGroup as $uid => $groups) {
                 $userTotalsSalesUsd = 0.0;
                 $userTotalsSalesCop = 0.0;
                 $userTotalsCommissionCop = 0.0;
 
-                // resolve user's role once (prefer at budget end date)
                 $userModel = User::find($uid);
                 $userRole = $this->resolveRoleModelForUserAtDate($userModel, $budget->end_date);
                 $roleId = $userRole ? (int)$userRole->id : null;
@@ -287,11 +327,9 @@ class CommissionService
                     }
 
                     if (!$rates) {
-                        // no rule found -> skip group for this user
                         Log::debug('[COMMISSION] no rates for role+group', ['user_id' => $uid, 'group' => $grp]);
                         $appliedPct = 0.0;
                     } else {
-                        // decide applied percentage
                         $appliedPct = 0.0;
                         if (!is_null($pctUser) && $pctUser >= $this->MIN_PCT_TO_QUALIFY) {
                             if ($pctUser >= 120) {
@@ -304,22 +342,19 @@ class CommissionService
                         } // else remains 0
                     }
 
-                    // compute commission_cop from aggregates (fast)
+                    // compute commission_cop
                     $commissionCop = 0.0;
                     if ($salesCop > 0) {
                         $commissionCop = round($salesCop * ((float)$appliedPct / 100), 2);
                     } elseif ($salesUsd > 0) {
-                        // fallback using global trm if available
                         $trmGlobal = ($totalUsd > 0 && $totalCop > 0) ? ($totalCop / $totalUsd) : null;
                         if ($trmGlobal && $trmGlobal > 0) {
                             $commissionCop = round(($salesUsd * ((float)$appliedPct / 100)) * $trmGlobal, 2);
                         } else {
-                            // cannot compute in COP -> leave 0 (we prioritized speed)
                             $commissionCop = 0.0;
                         }
                     }
 
-                    // upsert aggregated row per budget,user,group
                     DB::table('budget_user_category_totals')->updateOrInsert(
                         [
                             'budget_id' => $budget->id,
@@ -340,7 +375,6 @@ class CommissionService
                     $userTotalsCommissionCop += $commissionCop;
                 } // end groups for user
 
-                // update budget_user_totals row for user
                 DB::table('budget_user_totals')->updateOrInsert(
                     ['budget_id' => $budget->id, 'user_id' => $uid],
                     [
@@ -384,34 +418,18 @@ class CommissionService
         }
     }
 
-    /**
-     * Recalcula las agregaciones PARA UN usuario + budget:
-     * - borra las filas de budget_user_category_totals de ese user+budget
-     * - reprocesa las ventas de ese usuario en ese budget (re-inserta desde agregados)
-     */
+    // recalcForUserAndBudget unchanged...
     public function recalcForUserAndBudget(int $userId, int $budgetId): void
     {
-        Log::info('[COMMISSION] Recalc aggregated for user+budget', [
-            'user_id' => $userId,
-            'budget_id' => $budgetId,
-        ]);
+        Log::info('[COMMISSION] Recalc aggregated for user+budget', ['user_id' => $userId, 'budget_id' => $budgetId]);
 
         $budget = Budget::findOrFail($budgetId);
 
         DB::beginTransaction();
         try {
-            // delete previous aggregated rows for this user+budget
-            DB::table('budget_user_category_totals')
-                ->where('budget_id', $budgetId)
-                ->where('user_id', $userId)
-                ->delete();
+            DB::table('budget_user_category_totals')->where('budget_id', $budgetId)->where('user_id', $userId)->delete();
+            DB::table('budget_user_totals')->where('budget_id', $budgetId)->where('user_id', $userId)->delete();
 
-            DB::table('budget_user_totals')
-                ->where('budget_id', $budgetId)
-                ->where('user_id', $userId)
-                ->delete();
-
-            // Re-run a narrow process for this single user
             $result = $this->processBudgetForUsers($budget, [$userId]);
 
             Log::info('[COMMISSION] Recalc aggregated finished', ['result' => $result]);
@@ -428,45 +446,75 @@ class CommissionService
         }
     }
 
-    // -----------------------
-    // Helpers
-    // -----------------------
+    // helpers...
+  /**
+ * Normaliza classification_code en un "grupo" seguro.
+ * - Prioriza extracción NUMÉRICA: si contiene un número y ese número está en FRAG_CODES -> FRAG_KEY.
+ * - Si contiene un número distinto, devuelve el número como string ('22').
+ * - Si no contiene número, elimina acentos y normaliza espacios/lowercase.
+ * - Sólo mapea a FRAG_KEY por nombres exactos/esperados (no por substring simple).
+ */
+private function normalizeClassification($raw)
+{
+    $raw = (string) ($raw ?? '');
+    $raw = trim($raw);
+    if ($raw === '') return 'sin_categoria';
 
-    private function normalizeClassification($raw)
-    {
-        $raw = (string) ($raw ?? '');
-        $raw = trim($raw);
-        if ($raw === '') return 'sin_categoria';
+    // eliminar acentos básicos para comparación
+    $normalized = iconv('UTF-8', 'ASCII//TRANSLIT', $raw);
+    $normalized = mb_strtolower(trim($normalized));
 
-        if (is_numeric($raw) && in_array((int)$raw, self::FRAG_CODES, true)) {
+    // 1) intentar extraer un número (ej: "10", "10 - Fragancias", "010", "22a")
+    if (preg_match('/\b(\d{1,5})\b/', $normalized, $m)) {
+        $num = (int)$m[1];
+        if (in_array($num, self::FRAG_CODES, true)) {
             return self::FRAG_KEY;
         }
-
-        $low = mb_strtolower($raw);
-
-        if (str_contains($low, 'frag') || str_contains($low, 'perf')) {
-            return self::FRAG_KEY;
-        }
-
-        return trim($low);
+        // devolver el número como string para agrupar por código (ej "22")
+        return (string)$num;
     }
 
-    private function getSqlClassificationCase(): string
-    {
-        $codes = implode('|', array_map('intval', self::FRAG_CODES));
+    // 2) fallback para valores textuales: solo aceptar nombres frag/perf exactos o muy controlados
+    $acceptedFragNames = [
+        'fragancias','fragancia','fragancias perfumeria','perfumeria','perfumeria fragancias',
+        'fragancias/perfumeria','perfumería','fragancias y perfumería'
+    ];
+    // normalizar variantes (sin acentos, espacios multiples)
+    $clean = preg_replace('/\s+/', ' ', $normalized);
 
-        return "CASE
-            WHEN CAST(products.classification AS CHAR) REGEXP '^(?:{$codes})$' THEN '" . self::FRAG_KEY . "'
-            WHEN LOWER(CAST(products.classification AS CHAR)) LIKE '%frag%' THEN '" . self::FRAG_KEY . "'
-            WHEN LOWER(CAST(products.classification AS CHAR)) LIKE '%perf%' THEN '" . self::FRAG_KEY . "'
-            ELSE TRIM(COALESCE(products.classification, 'sin_categoria'))
-        END";
+    if (in_array($clean, $acceptedFragNames, true)) {
+        return self::FRAG_KEY;
     }
 
-    /**
-     * Obtiene el monto base en COP para un sale (no usado en agregación rápida,
-     * pero lo dejo por compatibilidad si deseas volver a cálculo por venta).
-     */
+    // 3) devolver texto normalizado (usado como grupo) - sin caracteres especiales repetidos
+    $clean = preg_replace('/[^a-z0-9\-_ ]+/', '', $clean);
+    $clean = preg_replace('/\s+/', ' ', $clean);
+    return trim($clean);
+}
+
+/**
+ * CASE SQL más estricto:
+ * - detecta CÓDIGOS numéricos exactos (10|11|12) dentro del campo products.classification
+ * - detecta palabras frag/perf sólo como tokens (no sub-strings arbitrarios)
+ * - deja el texto original como fallback
+ */
+private function getSqlClassificationCase(): string
+{
+    $codes = implode('|', array_map('intval', self::FRAG_CODES));
+
+    // patrón que detecta el código numérico como token o el número aislado dentro del campo
+    $numRegexp = "(^|[^0-9])(?:{$codes})([^0-9]|$)";
+
+    // patrón que detecta frag/perf como palabra (token) - reduce falsos positivos
+    $wordRegexp = "(^|[^a-zA-Z0-9])(frag|perf|perfume|perfumeria)([^a-zA-Z0-9]|$)";
+
+    return "CASE
+        WHEN CAST(products.classification AS CHAR) REGEXP '{$numRegexp}' THEN '" . self::FRAG_KEY . "'
+        WHEN LOWER(CAST(products.classification AS CHAR)) REGEXP '{$wordRegexp}' THEN '" . self::FRAG_KEY . "'
+        ELSE TRIM(COALESCE(products.classification, 'sin_categoria'))
+    END";
+}
+
     protected function getBaseCop(Sale $sale): float
     {
         if (!empty($sale->amount_cop) && $sale->amount_cop > 0) return (float) $sale->amount_cop;
@@ -499,14 +547,12 @@ class CommissionService
 
     protected function resolveRoleModelForUserAtDate(User $user, $date)
     {
-        // prefer model helper if exists
         if (method_exists($user, 'roleAtDate')) {
             $r = $user->roleAtDate($date);
             if ($r instanceof \App\Models\Role) return $r;
             if ($r && isset($r->role)) return $r->role;
         }
 
-        // fallback to pivot
         if (method_exists($user, 'roles')) {
             $pivot = $user->roles()->with('role')->orderByDesc('start_date')->first();
             if ($pivot && $pivot->role) return $pivot->role;

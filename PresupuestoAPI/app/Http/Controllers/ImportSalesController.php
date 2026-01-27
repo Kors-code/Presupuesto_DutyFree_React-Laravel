@@ -244,6 +244,8 @@ class ImportSalesController extends Controller
 
                             $email = strtolower(Str::slug($sellerName) . '@local');
 
+                            
+
                             if (!isset($usersCache[$email])) {
                                 $usersCache[$email] = User::updateOrCreate(
                                     ['email' => $email],                 // 🔑 clave única
@@ -373,26 +375,41 @@ class ImportSalesController extends Controller
                         $classificationNorm = $classificationRaw !== null
                             ? trim((string)$classificationRaw)
                             : null;
-
-
+                            
                         if (!isset($productsCache[$productKey])) {
-                            $productsCache[$productKey] = Product::firstOrCreate(
+
+                            $providerCode = $this->firstNotEmpty($assoc, ['codigo_proveedor']);
+                            $providerName = $this->firstNotEmpty($assoc, ['proveedor']);
+                            $regularPrice = $this->parseNumber($this->firstNotEmpty($assoc, ['precio_regular']));
+                            $avgCostUsd   = $this->parseNumber($this->firstNotEmpty($assoc, ['costo_promedio_usd']));
+                            $costUsd      = $this->parseNumber($this->firstNotEmpty($assoc, ['costo']));
+
+                            $productsCache[$productKey] = Product::updateOrCreate(
                                 [
                                     'product_code' => $this->firstNotEmpty($assoc, ['codigo', 'product_code']),
                                     'upc'          => $this->firstNotEmpty($assoc, ['upc', 'upc1']),
                                 ],
                                 [
-                                    'description'        => $this->firstNotEmpty($assoc, ['descripcion', 'description']),
-                                    'classification'     => $classificationNorm,
-                                    'classification_desc'=> $this->firstNotEmpty($assoc, ['descripcion_clasificacion', 'classification_desc']),
-                                    'brand'              => $this->firstNotEmpty($assoc, ['brand', 'marca']),
-                                    'currency'           => $this->firstNotEmpty($assoc, ['moneda', 'currency']),
+                                    'description'         => $this->firstNotEmpty($assoc, ['descripcion', 'description']),
+                                    'classification'      => $classificationNorm,
+                                    'classification_desc' => $this->firstNotEmpty($assoc, ['descripcion_clasificacion', 'classification_desc']),
+                                    'brand'               => $this->firstNotEmpty($assoc, ['brand', 'marca']),
+                                    'currency'            => $this->firstNotEmpty($assoc, ['moneda', 'currency']),
+
+                                    // 🔽 CAMPOS QUE TE SALÍAN NULL
+                                    'provider_code' => $providerCode,
+                                    'provider_name' => $providerName,
+                                    'regular_price' => $regularPrice,
+                                    'avg_cost_usd'  => $avgCostUsd,
+                                    'cost_usd'      => $costUsd,
                                 ]
                             );
+
                             if ($productsCache[$productKey]->wasRecentlyCreated) {
                                 $created['products']++;
                             }
                         }
+
                         $product = $productsCache[$productKey];
 
                         /* ===== Category (cache) ===== */
