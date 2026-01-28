@@ -11,6 +11,8 @@ use App\Models\Budget;
 use App\Models\User;
 use Throwable;
 use Illuminate\Support\Facades\Log;
+use PhpOffice\PhpSpreadsheet\Calculation\Calculation;
+use PhpOffice\PhpSpreadsheet\Settings;
 
 class TurnsImportController extends Controller
 {
@@ -50,7 +52,9 @@ class TurnsImportController extends Controller
                 'status' => 'processing'
             ]);
 
-            $sheets = Excel::toCollection(null, $file);
+            Calculation::getInstance()->setCalculationCacheEnabled(true);
+
+            $sheets = Excel::toCollection(null, $file, null, \Maatwebsite\Excel\Excel::XLSX);
 
             if ($sheets->isEmpty() || $sheets[0]->isEmpty()) {
                 throw new \Exception('El archivo está vacío');
@@ -68,8 +72,25 @@ class TurnsImportController extends Controller
                 $fila = $i + 2;
 
                 $mesNumero = (int) trim((string)($row[0] ?? ''));
-                $codigo    = trim((string)($row[1] ?? ''));
-                $turns     = (int) ($row[2] ?? 0);
+                $codigo    = trim((string)($row[2] ?? ''));
+                $turns     = (int) ($row[3] ?? 0);
+                $codigoRaw = trim((string)($row[2] ?? ''));
+
+                if (str_starts_with($codigoRaw, '=')) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => "El archivo contiene fórmulas en la columna Código (ej: BUSCARV). Debe pegarse como VALORES antes de importar.",
+                        'fila'    => $fila,
+                        'valor_detectado' => $codigoRaw
+                    ], 422);
+                }
+
+                $codigo = trim($codigoRaw);
+
+
+
+                log::info("Procesando fila $fila: mes=$mesNumero, codigo=$codigo, turnos=$turns");
 
                 if ($mesNumero < 1 || $mesNumero > 12) {
                     $errors[] = "Fila $fila: mes inválido ($mesNumero)";

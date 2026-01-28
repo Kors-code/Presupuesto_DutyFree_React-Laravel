@@ -27,6 +27,7 @@ class AssignTurnsByMonthImport implements ToCollection
 
 
 
+
                 if (!$mes || !$codigo || $turns < 0) {
                     $this->errors[] = "Fila ".($index+2)." inválida";
                     continue;

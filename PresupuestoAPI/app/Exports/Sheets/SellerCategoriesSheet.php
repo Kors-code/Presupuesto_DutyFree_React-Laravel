@@ -45,46 +45,54 @@ class SellerCategoriesSheet implements FromArray, WithHeadings, WithTitle, WithE
     }
 
     public function registerEvents(): array
-    {
-        return [
-            AfterSheet::class => function (AfterSheet $event) {
+{
+    return [
+        AfterSheet::class => function (AfterSheet $event) {
 
-                // columnas A → H
-                $lastColumn = 'H';
+            $lastColumn = 'I';
 
-                $seller = $this->meta['user']['name'] ?? 'Vendedor';
-                $budget = $this->meta['budget']['name'] ?? '';
-                $start  = $this->meta['budget']['start_date'] ?? '';
-                $end    = $this->meta['budget']['end_date'] ?? '';
+            $seller = $this->meta['user']['name'] ?? 'Vendedor';
+            $budget = $this->meta['budget']['name'] ?? '';
+            $start  = $this->meta['budget']['start_date'] ?? '';
+            $end    = $this->meta['budget']['end_date'] ?? '';
 
-                // 🔹 FILA 1: Nombre vendedor
-                $event->sheet->mergeCells("A1:{$lastColumn}1");
-                $event->sheet->setCellValue(
-                    'A1',
-                    strtoupper($seller) . ' — Detalle de Comisiones'
-                );
+            // Insertar espacio arriba
+            $event->sheet->insertNewRowBefore(1, 3);
 
-                // 🔹 FILA 2: Presupuesto / Periodo
-                $event->sheet->mergeCells("A2:{$lastColumn}2");
-                $event->sheet->setCellValue(
-                    'A2',
-                    "Presupuesto: {$budget} | Periodo: {$start} → {$end}"
-                );
+            // TITULO
+            $event->sheet->mergeCells("A1:{$lastColumn}1");
+            $event->sheet->setCellValue('A1', strtoupper($seller) . ' — RESUMEN POR CATEGORÍA');
 
-                // estilos
-                $event->sheet->getStyle("A1")->applyFromArray([
-                    'font' => ['bold' => true, 'size' => 14],
-                    'alignment' => ['horizontal' => 'center'],
-                ]);
+            // SUBTITULO
+            $event->sheet->mergeCells("A2:{$lastColumn}2");
+            $event->sheet->setCellValue('A2', "Presupuesto: {$budget} | Periodo: {$start} → {$end}");
 
-                $event->sheet->getStyle("A2")->applyFromArray([
-                    'font' => ['italic' => true, 'size' => 10],
-                    'alignment' => ['horizontal' => 'center'],
-                ]);
+            // ESTILOS
+            $event->sheet->getStyle("A1")->applyFromArray([
+                'font' => ['bold' => true, 'size' => 14],
+                'alignment' => ['horizontal' => 'center'],
+            ]);
 
-                // mover headings a fila 4
-                $event->sheet->insertNewRowBefore(3, 1);
-            },
-        ];
-    }
+            $event->sheet->getStyle("A2")->applyFromArray([
+                'font' => ['italic' => true, 'size' => 10],
+                'alignment' => ['horizontal' => 'center'],
+            ]);
+
+            // Encabezados (fila 4)
+            $event->sheet->getStyle("A4:I4")->applyFromArray([
+                'font' => ['bold' => true],
+                'fill' => [
+                    'fillType' => 'solid',
+                    'startColor' => ['argb' => 'FFEFEFEF'],
+                ],
+            ]);
+
+            // Auto ancho columnas
+            foreach (range('A','H') as $col) {
+                $event->sheet->getDelegate()->getColumnDimension($col)->setAutoSize(true);
+            }
+        },
+    ];
+}
+
 }

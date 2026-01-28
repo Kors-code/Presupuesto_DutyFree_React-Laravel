@@ -175,6 +175,7 @@ class CommissionReportController extends Controller
         $query = User::query()
             ->selectRaw("users.id AS user_id,
                          users.name AS seller,
+                         users.codigo_vendedor AS seller_code,
                          COALESCE(but.assignedTurns,0) AS assignedTurns,
                          COALESCE(butot.total_sales_cop,0) AS total_sales_cop,
                          COALESCE(butot.total_sales_usd,0) AS total_sales_usd,
@@ -888,7 +889,7 @@ class CommissionReportController extends Controller
         $sellers = [];
         foreach ($data['sellers'] as $s) {
             $sellers[] = [
-                $s['user_id'] ?? null,
+                $s['seller_code'] ?? $s['seller_id']  ?? $s['codigo_vendedor'] ?? 'N/A', 
                 $s['seller'] ?? null,
                 $s['assignedTurns'] ?? 0,
                 $s['total_sales_cop'] ?? 0,
@@ -939,6 +940,8 @@ class CommissionReportController extends Controller
         }
 
         $avgTrm = $data['totals']['avg_trm'] ?? 1;
+        $sellerCode = $data['user']['code'] ?? $data['user']['id'] ?? '';
+
 
         $categories = [];
         foreach ($data['categories'] as $c) {
@@ -970,6 +973,7 @@ class CommissionReportController extends Controller
 
             $sales[] = [
                 $s['sale_date'],
+                $sellerCode, 
                 $s['folio'],
                 $s['product'],
                 $cat['category'] ?? 'Sin categoría',
