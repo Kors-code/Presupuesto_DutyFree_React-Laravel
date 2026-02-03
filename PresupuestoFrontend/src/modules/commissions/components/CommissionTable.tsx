@@ -1,4 +1,3 @@
-import React from 'react';
 import type { CategoryRow } from '../types';
 
 export default function CommissionTable({ rows }: { rows: CategoryRow[] }) {

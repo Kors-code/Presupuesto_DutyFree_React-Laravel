@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import  { useEffect, useMemo, useState } from 'react';
 import api from '../../../api/axios';
 import CommissionDetailModal from '../components/CommissionDetailModal';
 
@@ -184,8 +184,7 @@ export default function CommissionCardsPage() {
   const moneyCOP = (v:number) => new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v || 0);
 
   const avgTicketUsd = ticketsSummary?.avg_ticket_usd;
-  const avgTicketCop = ticketsSummary?.avg_ticket_cop;
-  const bestTicketSeller = ticketsSummary?.best_seller_by_avg_ticket;
+
 
   const totalUsd = (budgetProgress?.total_usd ?? categoriesSummaryGlobal.reduce((s:any,c:any)=> s + Number(c.sales_usd || 0), 0));
   const pptoUsd = budgetProgress?.required_usd ?? (budgetProgress?.budget?.target_amount ?? 0);

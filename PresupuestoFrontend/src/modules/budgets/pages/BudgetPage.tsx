@@ -1,16 +1,18 @@
-import React, { useState } from 'react';
+import  { useState } from 'react';
 import useBudgets from '../../../hooks/useBudgets';
 import BudgetForm from '../components/BudgetForm';
 import BudgetList from '../components/BudgetList';
 import type { Budget } from '../types';
+import { useNavigate } from 'react-router-dom';
 
 export default function BudgetsPage() {
-  const { items: budgets, loading, saving, error, activeInfo, create, update, remove } = useBudgets();
+  const { items: budgets, loading, saving,  activeInfo, create, update, remove } = useBudgets();
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Budget | null>(null);
 
   const openCreate = () => { setEditing(null); setShowForm(true); };
   const openEdit = (b: Budget) => { setEditing(b); setShowForm(true); };
+  const navigate = useNavigate();
 
   const handleSubmit = async (payload: Partial<Budget>) => {
     try {
@@ -46,7 +48,12 @@ export default function BudgetsPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <button onClick={openCreate} className="bg-primary text-white px-4 py-2 rounded-xl">+ Nuevo Presupuesto</button>
-          {activeInfo && activeInfo.budget && (
+          <button
+            onClick={() => navigate('/commissions/categories')}
+            className="bg-primary text-white px-4 py-2 rounded-xl"
+          >
+            Modificar Participación
+          </button>          {activeInfo && activeInfo.budget && (
             <div className="text-sm text-gray-700">
               Activo: <strong>{activeInfo.budget.name}</strong> — {activeInfo.sales_total ?? 0} ({activeInfo.compliance_pct ?? 0}%)
             </div>

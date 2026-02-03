@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import  { useEffect, useMemo, useState } from 'react';
 import api from '../../../api/axios';
 
 /* ================= TYPES ================= */
@@ -22,8 +22,6 @@ export default function MyCommissionsPage() {
 
   const [view, setView] = useState<'cards' | 'table'>('cards');
 
-  // 🔧 MANUAL por ahora
-  const USER_ID = 18;
 
   // Presupuestos
   const [budgets, setBudgets] = useState<any[]>([]);
@@ -45,9 +43,7 @@ export default function MyCommissionsPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const res = await api.get(
-        `/commissions/by-seller/${USER_ID}?budget_id=${budgetId}`
-      );
+    const res = await api.get(`/commissions/my?budget_id=${budgetId}`)
       const d = res.data || {};
 
       setCategories(d.categories || []);
@@ -59,6 +55,7 @@ export default function MyCommissionsPage() {
       setLoading(false);
     }
   };
+
 
   /* ================= HELPERS ================= */
   const moneyUSD = (v:number) =>

@@ -8,8 +8,7 @@ export interface CategoryWithCommission {
     commission_percentage?: number | null;
     commission_percentage100?: number | null;
     commission_percentage120?: number | null;
-
-    min_pct_to_qualify?: number | null;
+    participation_pct?: number;
 }
 
 export type Role = { id: number; name: string; };

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import  { useState } from 'react';
 import { getSalesByVendor } from '../../../api/sales';
 
 export default function VendorSalesPage() {

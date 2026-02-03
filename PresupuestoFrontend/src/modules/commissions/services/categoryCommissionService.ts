@@ -41,7 +41,7 @@ export const upsertCategoryCommission = async (payload: {
   commission_percentage: number;
   commission_percentage100?: number;
   commission_percentage120?: number;
-  min_pct_to_qualify?: number;
+  participation_pct?: number;  
 }) => {
   const res = await api.post('/commissions/categories', payload);
   return res.data;

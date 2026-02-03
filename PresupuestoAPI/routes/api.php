@@ -66,6 +66,8 @@ Route::get('/v1/ping', function () {
     Route::put('commissions/assign-turns/{userId}/{budget_id}', [CommissionReportController::class, 'assignTurns']);
     Route::post('commissions/assign-turns/{userId}/{budget_id}', [CommissionReportController::class, 'assignTurns']);
     
+        // auth ruta segura
+    Route::middleware('auth')->get('/commissions/my', [CommissionReportController::class, 'myCommissions']);
     // REPORTS Cajeros
     Route::get('reports/cashier-awards', [ReportController::class, 'cashierAwards']);
     Route::get('reports/cashier/{userId}/categories', [ReportController::class, 'cashierCategories']);    
@@ -78,6 +80,10 @@ Route::get('/v1/ping', function () {
     Route::post('commissions/categories/bulk', [CategoryCommissionController::class, 'bulkUpdate']);
     
     Route::post('/commissions/generate', [CommissionController::class, 'generate']);
+
+    
+
+
     // Budget 
         
     Route::get('/budgets', [BudgetController::class, 'index']);

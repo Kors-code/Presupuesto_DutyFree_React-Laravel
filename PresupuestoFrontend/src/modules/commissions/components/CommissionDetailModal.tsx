@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import api from '../../../api/axios';
 
 /* ================= TYPES ================= */
 type SaleRow = {
+  id?: number | string; // opcional si el backend lo provee
   sale_date: string;
   folio: string;
   product: string;
@@ -10,11 +11,18 @@ type SaleRow = {
   value_usd: number;
   exchange_rate?: number | null;
 
+  // campos adicionales que pueden venir del backend
+  provider?: string;
+  brand?: string;
+
   // ⚠️ calculado en frontend
   commission_amount?: number;
 
   is_provisional?: boolean;
   category_code?: string;
+
+  // clave única generada en frontend (fallback si no hay id)
+  rowKey?: string;
 };
 
 export default function CommissionDetailModal({
@@ -23,7 +31,7 @@ export default function CommissionDetailModal({
   onClose
 }: {
   userId: number;
-  budgetIds: number[];            // ahora recibe un array de presupuestos
+  budgetIds: number[]; // ahora recibe un array de presupuestos
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -38,10 +46,16 @@ export default function CommissionDetailModal({
   const [search, setSearch] = useState('');
   const [categoryView, setCategoryView] = useState<'cards' | 'table'>('cards');
 
+  // nuevos filtros
+  const [filterProvider, setFilterProvider] = useState<string>('ALL');
+  const [filterBrand, setFilterBrand] = useState<string>('ALL');
+  const [filterProduct, setFilterProduct] = useState<string>('ALL');
+  const [filterFolios, setFilterFolios] = useState<string[]>([]); // multi-select for folios
+
   // Turnos: mostramos el total agregado, pero permitimos editar por presupuesto individual
   const [assignedTurnsTotal, setAssignedTurnsTotal] = useState<number>(0); // suma de turnos asignados en budgets seleccionados
   const [selectedBudgetForEdit, setSelectedBudgetForEdit] = useState<number | null>(null); // presupuesto a editar
-  const [editedTurns, setEditedTurns] = useState<number>(0);     // input editable para el presupuesto seleccionado
+  const [editedTurns, setEditedTurns] = useState<number>(0); // input editable para el presupuesto seleccionado
   const [savingTurns, setSavingTurns] = useState(false);
 
   // Guardar una representación string de budgetIds en el effect deps para detectar cambios en order/values
@@ -80,7 +94,7 @@ export default function CommissionDetailModal({
 
       // sales: calculamos la comisión provisional en frontend (igual que exportSellerDetail)
       const avgTrm = Number(d.totals?.avg_trm || 0) || 1;
-      const computedSales: SaleRow[] = (d.sales || []).map((s: any) => {
+      const computedSales: SaleRow[] = (d.sales || []).map((s: any, i: number) => {
         const amountCop = Number(s.amount_cop || 0);
         const valueUsd = Number(s.value_usd || 0);
 
@@ -95,11 +109,16 @@ export default function CommissionDetailModal({
             ? amountCop * (pct / 100)
             : valueUsd * avgTrm * (pct / 100);
 
+        // clave única por fila. Usa s.id si el backend la trae (recomendado).
+        const rowKey = s.id ? String(s.id) : `${s.folio ?? 'nofolio'}-${s.sale_date ?? 'nodate'}-${String(s.product ?? '').slice(0,30)}-${i}`;
+
         return {
           ...s,
+          id: s.id,
           commission_amount: Math.round(commission),
-          is_provisional: true
-        };
+          is_provisional: true,
+          rowKey,
+        } as SaleRow;
       });
 
       setSales(computedSales);
@@ -108,6 +127,12 @@ export default function CommissionDetailModal({
       const assigned = Number(d.assigned_turns_for_user ?? 0);
       setAssignedTurnsTotal(assigned);
       setEditedTurns(assigned); // por defecto mostramos la suma; al editar escogeremos budget individual
+
+      // reset filters when loading fresh data
+      setFilterProvider('ALL');
+      setFilterBrand('ALL');
+      setFilterProduct('ALL');
+      setFilterFolios([]);
 
       // Si el backend devuelve información por presupuesto (opcional), podemos inicializar selectedBudgetWithValue
       // pero por simplicidad usamos selectedBudgetForEdit (ya seteado al primero).
@@ -158,6 +183,12 @@ export default function CommissionDetailModal({
     };
   });
 
+  // derive lists for new filters
+  const providers = useMemo(() => Array.from(new Set(sales.map(s => s.provider).filter(Boolean))), [sales]);
+  const brands = useMemo(() => Array.from(new Set(sales.map(s => s.brand).filter(Boolean))), [sales]);
+  const productsList = useMemo(() => Array.from(new Set(sales.map(s => s.product).filter(Boolean))), [sales]);
+  const foliosList = useMemo(() => Array.from(new Set(sales.map(s => s.folio).filter(Boolean))), [sales]);
+
   /**
    * Guardar turnos para el presupuesto seleccionado (el endpoint espera un budgetId individual)
    * Si el usuario seleccionó varios budgets, debe escoger en el select cuál editar.
@@ -184,14 +215,56 @@ export default function CommissionDetailModal({
     }
   };
 
+async function downloadExcel() {
+  if (!userId || !budgetIds.length) {
+    alert('Selecciona al menos un presupuesto');
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams();
+    budgetIds.forEach(id => params.append('budget_ids[]', String(id)));
+
+    const res = await api.get(
+      `/commissions/by-seller/${userId}/export?${params.toString()}`,
+      { responseType: 'blob' }
+    );
+
+    const blob = new Blob(
+      [res.data],
+      { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+    );
+
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `detalle_comisiones_${userName.replace(/\s+/g, '_')}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+
+  } catch (e) {
+    console.error(e);
+    alert('Error descargando el Excel');
+  }
+}
+
+  
+
   /* ================= SALES FILTER ================= */
   const filteredSales = useMemo(() => {
     return sales.filter(s => {
       if (filterCat !== 'ALL' && String(s.category_code ?? '') !== String(filterCat)) return false;
+      if (filterProvider !== 'ALL' && String(s.provider ?? '') !== String(filterProvider)) return false;
+      if (filterBrand !== 'ALL' && String(s.brand ?? '') !== String(filterBrand)) return false;
+      if (filterProduct !== 'ALL' && String(filterProduct) !== String(s.product ?? '')) return false;
+      if (filterFolios.length > 0 && !filterFolios.includes(String(s.folio ?? ''))) return false;
+
       if (!search) return true;
       return `${s.product} ${s.folio}`.toLowerCase().includes(search.toLowerCase());
     });
-  }, [sales, filterCat, search]);
+  }, [sales, filterCat, search, filterProvider, filterBrand, filterProduct, filterFolios]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -212,9 +285,7 @@ export default function CommissionDetailModal({
               </div>
             )}
             {!budgetInfo && (
-              <div className="text-xs text-gray-400 mt-1">
-                Presupuestos: {budgetIds.join(', ')}
-              </div>
+              <div className="text-xs text-gray-400 mt-1">Presupuestos: {budgetIds.join(', ')}</div>
             )}
           </div>
 
@@ -238,15 +309,11 @@ export default function CommissionDetailModal({
                 onChange={e => {
                   const id = e.target.value ? Number(e.target.value) : null;
                   setSelectedBudgetForEdit(id);
-                  // por falta de endpoint con valor por presupuesto, dejamos editedTurns con el total (y usuario lo ajusta)
-                  // alternativamente, podrías implementar una llamada para traer turnos por budget si existe API.
                 }}
                 className="border rounded-lg px-3 py-2 text-sm bg-white"
               >
-                {budgetIds.map(bid => (
-                  <option key={bid} value={bid}>
-                    {`Budget ${bid}`}
-                  </option>
+                {budgetIds.map((bid, idx) => (
+                  <option key={`budget-${bid}-${idx}`} value={bid}> {`Budget ${bid}`} </option>
                 ))}
               </select>
 
@@ -274,6 +341,7 @@ export default function CommissionDetailModal({
         {loading ? (
           <div className="p-16 text-center text-gray-500">Cargando información…</div>
         ) : (
+
           <>
             {/* KPI CARDS */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mb-10">
@@ -288,20 +356,28 @@ export default function CommissionDetailModal({
               />
             </div>
 
+<div className="flex justify-end mb-6">
+  <button
+    onClick={downloadExcel}
+    className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-md hover:shadow-lg transition-all"
+  >
+    📥 Descargar Excel
+  </button>
+</div>
+
+
             {/* CATEGORY HEADER + TOGGLE */}
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-semibold">Desempeño por categoría</h3>
               <div className="flex gap-2">
                 <button
                   onClick={() => setCategoryView('cards')}
-                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'cards' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                >
+                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'cards' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
                   Cards
                 </button>
                 <button
                   onClick={() => setCategoryView('table')}
-                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'table' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                >
+                  className={`px-3 py-1.5 rounded text-sm ${categoryView === 'table' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700'}`}>
                   Tabla
                 </button>
               </div>
@@ -310,10 +386,10 @@ export default function CommissionDetailModal({
             {/* CATEGORY VIEW */}
             {categoryView === 'cards' ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mb-12">
-                {categoryCards.map(c => {
+                {categoryCards.map((c, idx) => {
                   const status = c.pct >= 100 ? 'success' : c.pct >= 90 ? 'warning' : 'danger';
                   return (
-                    <div key={c.code} className="bg-white rounded-2xl shadow border p-4 relative">
+                    <div key={`${c.code}-${idx}`} className="bg-white rounded-2xl shadow border p-4 relative">
                       <div className={`absolute top-0 left-0 h-1 w-full rounded-t-2xl ${status === 'success' ? 'bg-green-500' : status === 'warning' ? 'bg-yellow-500' : 'bg-red-500'}`} />
                       <div className="flex justify-between mb-3">
                         <div>
@@ -360,8 +436,8 @@ export default function CommissionDetailModal({
                     </tr>
                   </thead>
                   <tbody>
-                    {categoryCards.map(c => (
-                      <tr key={c.code} className="border-t">
+                    {categoryCards.map((c, idx) => (
+                      <tr key={`cat-row-${c.code}-${idx}`} className="border-t">
                         <td className="p-3">{c.name}</td>
                         <td className="p-3 text-right">{moneyUSD(c.ppto)}</td>
                         <td className="p-3 text-right">{moneyUSD(c.sales)}</td>
@@ -379,15 +455,56 @@ export default function CommissionDetailModal({
             {/* SALES FILTER */}
             <h3 className="text-lg font-semibold mb-3">Detalle de ventas</h3>
 
-            <div className="flex gap-2 mb-4">
-              <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
-                <option value="ALL">Todas las categorías</option>
-                {categoryCards.map(c => (
-                  <option key={c.code} value={c.code}>{c.name}</option>
-                ))}
-              </select>
+            <div className="flex flex-col md:flex-row gap-2 mb-4">
+              <div className="flex gap-2 w-full md:w-auto">
+                <select value={filterCat} onChange={e => setFilterCat(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                  <option value="ALL">Todas las categorías</option>
+                  {categoryCards.map((c, idx) => (
+                    <option key={`cat-opt-${c.code}-${idx}`} value={c.code}>{c.name}</option>
+                  ))}
+                </select>
 
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar producto o folio…" className="border rounded-lg px-3 py-2 text-sm flex-1" />
+                <select value={filterProvider} onChange={e => setFilterProvider(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                  <option value="ALL">Proveedor: Todos</option>
+                  {providers.map((p, idx) => (
+                    <option key={`prov-${p}-${idx}`} value={p}>{p}</option>
+                  ))}
+                </select>
+
+                <select value={filterBrand} onChange={e => setFilterBrand(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                  <option value="ALL">Marca: Todas</option>
+                  {brands.map((b, idx) => (
+                    <option key={`brand-${b}-${idx}`} value={b}>{b}</option>
+                  ))}
+                </select>
+
+                <select value={filterProduct} onChange={e => setFilterProduct(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                  <option value="ALL">Producto: Todos</option>
+                  {productsList.map((p, idx) => (
+                    <option key={`prod-${p}-${idx}`} value={p}>{p}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex gap-2 w-full">
+                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar producto o folio…" className="border rounded-lg px-3 py-2 text-sm flex-1" />
+
+                {/* folios multi-select */}
+                <select
+                  multiple
+                  value={filterFolios}
+                  onChange={e => {
+                    const opts = Array.from(e.target.selectedOptions).map(o => o.value);
+                    setFilterFolios(opts);
+                  }}
+                  className="border rounded-lg px-3 py-2 text-sm w-44 bg-white"
+                  title="Selecciona varios folios con Ctrl/Cmd+click"
+                >
+                  {foliosList.map((f, idx) => (
+                    <option key={`folio-${f}-${idx}`} value={f}>{f}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {/* SALES TABLE */}
@@ -396,6 +513,8 @@ export default function CommissionDetailModal({
                 <thead className="bg-gray-100">
                   <tr>
                     <th className="p-3 text-left">Fecha</th>
+                    <th className="p-3 text-left">Proveedor</th>
+                    <th className="p-3 text-left">Marca</th>
                     <th className="p-3 text-left">Producto</th>
                     <th className="p-3 text-right">USD</th>
                     <th className="p-3 text-right">COP</th>
@@ -404,9 +523,11 @@ export default function CommissionDetailModal({
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredSales.map(s => (
-                    <tr key={`${s.folio}-${s.sale_date}`} className="border-t hover:bg-gray-50">
+                  {filteredSales.map((s, idx) => (
+                    <tr key={String((s as any).id ?? (s as any).rowKey ?? `${s.folio}-${s.sale_date}-${idx}`)} className="border-t hover:bg-gray-50">
                       <td className="p-3">{s.sale_date}</td>
+                      <td className="p-3">{s.provider ?? '—'}</td>
+                      <td className="p-3">{s.brand ?? '—'}</td>
                       <td className="p-3">{s.product || s.folio}</td>
                       <td className="p-3 text-right">{moneyUSD(s.value_usd)}</td>
                       <td className="p-3 text-right">{moneyCOP(s.amount_cop)}</td>

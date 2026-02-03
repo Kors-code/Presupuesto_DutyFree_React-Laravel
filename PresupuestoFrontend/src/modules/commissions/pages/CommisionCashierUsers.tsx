@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import  { useEffect, useMemo, useState } from 'react';
 import api from '../../../api/axios';
 
-function moneyUSD(v) {
+function moneyUSD(v: any): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(v || 0));
 }
-function moneyCOP(v) {
+function moneyCOP(v: any): string {
   return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 }).format(Number(v || 0));
 }
 
-function getField(obj, ...keys) {
+function getField(obj: any, ...keys: string[]): any {
   if (!obj) return undefined;
   for (const k of keys) {
     if (obj[k] !== undefined && obj[k] !== null) return obj[k];
@@ -17,28 +17,40 @@ function getField(obj, ...keys) {
 }
 
 
-function formatThousands(value) {
-  if (value === '' || value === null || value === undefined) return '';
-  return Number(value).toLocaleString('en-US');
+
+interface BudgetItem {
+  id: number;
+  name: string;
+  start_date: string;
+  end_date: string;
+  cashier_prize?: number;
 }
 
-function unformatThousands(value) {
-  return String(value).replace(/,/g, '');
+interface ReportData {
+  raw: any;
+  rows: any[];
+  totalVentas: number;
+  prizeAt120: number;
+  prizeApplied: number;
+  cumplimiento: number;
+  period: any;
 }
 
 
-export default function CashierAwards() {
+
+export default function CommisionCashierUsers() {
   const [loading, setLoading] = useState(true);
-  const [report, setReport] = useState(null); // normalized report
-  const [view, setView] = useState('table'); // 'table' | 'cards'
-  const [selectedRow, setSelectedRow] = useState(null);
-  const [budgets, setBudgets] = useState([]);
-  const [budgetId, setBudgetId] = useState(null);
+  const [report, setReport] = useState<ReportData | null>(null); // normalized report
+  const [view, setView] = useState<'table' | 'cards'>('table'); // 'table' | 'cards'
+  const [selectedRow, setSelectedRow] = useState<any>(null);
+  const [budgets, setBudgets] = useState<BudgetItem[]>([]);
+  const [budgetId, setBudgetId] = useState<number | null>(null);
 
   // prize editing
   const [budgetPrizeDraft, setBudgetPrizeDraft] = useState('');
-  const [savingPrize, setSavingPrize] = useState(false);
-  const [saveMessage, setSaveMessage] = useState(null);
+
+  console.log(budgetPrizeDraft)
+
 
   // cargar presupuestos
   useEffect(() => {
@@ -72,7 +84,7 @@ export default function CashierAwards() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [budgetId, budgets]);
 
-  async function loadReport(bid) {
+  async function loadReport(bid: number): Promise<void> {
     setLoading(true);
     setReport(null);
     try {
@@ -114,40 +126,10 @@ export default function CashierAwards() {
     };
   }, [report]);
 
-  async function handleSavePrize() {
-    if (!budgetId) return setSaveMessage({ type: 'error', text: 'Selecciona un presupuesto primero.' });
-    // parse number safe
-    const parsed = Number(String(budgetPrizeDraft).replace(/[^0-9.-]+/g, '')) || 0;
-    setSavingPrize(true);
-    setSaveMessage(null);
-    try {
-      // PATCH budget (asume ruta y permisos)
-      await api.patch(`/budgets/${budgetId}/cashier-prize`, {
-        cashier_prize: parsed
-      });
-      // actualizar lista local de budgets y reporte
-      const updatedBudgets = budgets.map(b => {
-        if (Number(b.id) === Number(budgetId)) {
-          return { ...b, cashier_prize: Math.round(parsed) };
-        }
-        return b;
-      });
-      setBudgets(updatedBudgets);
-      // recargar reporte para que muestre prize_applied actualizado
-      await loadReport(budgetId);
-      setSaveMessage({ type: 'success', text: 'Premio guardado correctamente.' });
-    } catch (err) {
-      console.error('Error saving prize', err);
-      setSaveMessage({ type: 'error', text: 'No se pudo guardar el premio. Revisa la consola.' });
-    } finally {
-      setSavingPrize(false);
-      // borrar mensaje en 4s
-      setTimeout(() => setSaveMessage(null), 4000);
-    }
-  }
 
 
-  async function downloadExcel() {
+
+  async function downloadExcel(): Promise<void> {
   if (!budgetId) {
     alert('Selecciona un presupuesto');
     return;
@@ -220,42 +202,7 @@ export default function CashierAwards() {
             </select>
           </div>
 
-          <div className="ml-2">
-            <label className="text-xs text-gray-500">Premio (tope para 120%)</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={formatThousands(budgetPrizeDraft)}
-                onChange={(e) => {
-                  const raw = unformatThousands(e.target.value);
 
-                  // solo números (sin decimales)
-                  if (/^\d*$/.test(raw)) {
-                    setBudgetPrizeDraft(raw);
-                  }
-                }}
-                className="w-44 border rounded px-3 py-2 text-sm text-right"
-                placeholder="2,400,000"
-              />
-
-              <button
-                onClick={handleSavePrize}
-                disabled={savingPrize}
-                className={`px-3 py-2 rounded text-sm ${savingPrize ? 'bg-gray-300 text-gray-700' : 'bg-red-700 text-white'}`}
-              >
-                {savingPrize ? 'Guardando…' : 'Guardar premio'}
-              </button>
-            </div>
-            {saveMessage && (
-              <div className={`text-sm mt-2 ${saveMessage.type === 'error' ? 'text-red-600' : 'text-green-600'}`}>
-                {saveMessage.text}
-              </div>
-            )}
-            <div className="text-xs text-gray-400 mt-1">
-              El valor aquí corresponde al premio que se pagaría cuando el cumplimiento llegue al 120%.
-            </div>
-          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -320,7 +267,7 @@ export default function CashierAwards() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {rows.map((r: any, i: number) => (
                 <tr
                   key={i}
                   className="border-t hover:bg-slate-50 cursor-pointer"
@@ -348,7 +295,7 @@ export default function CashierAwards() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {rows.map((r, i) => (
+          {rows.map((r: any, i: number) => (
             <article
               key={i}
               className="bg-white rounded-xl shadow p-4 hover:shadow-xl transform hover:-translate-y-1 transition cursor-pointer"
@@ -397,15 +344,29 @@ export default function CashierAwards() {
 }
 
 /* ================= Modal: ventas por categoría para un cajero ================= */
-function CashierCategoryModal({ selectedRow, budgetId, onClose }) {
+interface CashierCategoryModalProps {
+  selectedRow: any;
+  budgetId: number | null;
+  onClose: () => void;
+}
+
+interface CategoryMeta {
+  cashierName: string;
+  totalUsd: number;
+  tickets: number;
+  totalCop?: number;
+}
+
+function CashierCategoryModal({ selectedRow, budgetId, onClose }: CashierCategoryModalProps) {
   const [loading, setLoading] = useState(true);
-  const [cats, setCats] = useState([]);
-  const [meta, setMeta] = useState({
+  const [cats, setCats] = useState<any[]>([]);
+  const [meta, setMeta] = useState<CategoryMeta>({
     cashierName: selectedRow?.nombre || '—',
     totalUsd: 0,
-    tickets: 0
+    tickets: 0,
+    totalCop: 0
   });
-  const [error, setError] = useState(null);
+  const [error, setError] = useState<string | null>(null);
 
   // calcular posible id del cajero (defensivo)
   const cashierId = selectedRow?.user_id ?? selectedRow?.id ?? selectedRow?.uid ?? selectedRow?.user?.id ?? null;
@@ -415,7 +376,7 @@ function CashierCategoryModal({ selectedRow, budgetId, onClose }) {
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
 
     // fetch
@@ -433,10 +394,12 @@ function CashierCategoryModal({ selectedRow, budgetId, onClose }) {
         });
         const d = res.data || {};
         setCats(d.categories || []);
+        const totalCopVal = d.summary?.total_sales_cop ?? 0;
         setMeta({
           cashierName: d.cashier?.name ?? selectedRow.nombre ?? '—',
           totalUsd: d.summary?.total_sales_usd ?? 0,
-          tickets: d.summary?.tickets_count ?? 0
+          tickets: d.summary?.tickets_count ?? 0,
+          totalCop: totalCopVal
         });
       } catch (e) {
         console.error('Error loading cashier categories', e);
@@ -493,7 +456,7 @@ function CashierCategoryModal({ selectedRow, budgetId, onClose }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {cats.map((c, i) => (
+                  {cats.map((c: any, i: number) => (
                     <tr key={i} className="border-t hover:bg-slate-50">
                       <td className="p-2">{c.classification || c.category || 'Sin categoría'}</td>
                       <td className="p-2 text-right">{moneyUSD(c.sales_usd)}</td>
@@ -507,7 +470,7 @@ function CashierCategoryModal({ selectedRow, budgetId, onClose }) {
                   <tr>
                     <td className="p-2">Total</td>
                     <td className="p-2 text-right">{moneyUSD(meta.totalUsd)}</td>
-                    <td className="p-2 text-right">{moneyCOP(meta.totalCop)}</td>
+                    <td className="p-2 text-right">{moneyCOP(meta.totalCop || 0)}</td>
                     <td className="p-2 text-right">100%</td>
                   </tr>
                 </tfoot>

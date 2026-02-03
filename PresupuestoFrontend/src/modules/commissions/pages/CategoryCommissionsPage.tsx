@@ -1,5 +1,6 @@
 // src/modules/commissions/pages/CategoryCommissionsPage.tsx
-import React, { useEffect, useMemo, useState } from 'react';
+import  { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   getCategoriesWithCommission,
   upsertCategoryCommission,
@@ -12,7 +13,7 @@ import {
 import type { CategoryWithCommission, Role } from '../types/comissionscategory';
 
 export default function CategoryCommissionsPage() {
-  const [roles, setRoles] = useState<Role[]>([]);
+  const [ roles, setRoles] = useState<Role[]>([]);
   const [roleId, setRoleId] = useState<number | null>(null);
 
   const [budgets, setBudgets] = useState<any[]>([]);
@@ -23,20 +24,25 @@ export default function CategoryCommissionsPage() {
   const [saving, setSaving] = useState(false);
   const [savingIds, setSavingIds] = useState<number[]>([]);
   const [message, setMessage] = useState<{ type: 'ok'|'error', text: string } | null>(null);
+  const navigate = useNavigate();
 
   // filas marcadas como modificadas (dirty)
   const [dirtyIds, setDirtyIds] = useState<Set<number>>(new Set());
 
 
+  const test = roles;
+
+  console.log(test)
+
   const normalizeCategoryName = (name: string) => {
-  const n = name.toLowerCase();
+    const n = name.toLowerCase();
 
-  if (n.includes('frag')) {
-    return 'FRAGANCIA';
-  }
+    if (n.includes('frag')) {
+      return 'FRAGANCIA';
+    }
 
-  return name;
-};
+    return name;
+  };
 
 
   // load roles + budgets on mount
@@ -49,7 +55,13 @@ export default function CategoryCommissionsPage() {
         setRoles(Array.isArray(rolesData) ? rolesData : []);
         setBudgets(Array.isArray(budgetsData) ? budgetsData : []);
 
-        if (Array.isArray(rolesData) && rolesData.length) setRoleId(prev => prev ?? rolesData[0].id);
+        if (Array.isArray(rolesData) && rolesData.length) {
+          const vendedor = rolesData.find(r =>
+            r.name.toLowerCase().includes('vendedor')
+          );
+          setRoleId(vendedor ? vendedor.id : rolesData[0].id);
+        }
+
         if (Array.isArray(budgetsData) && budgetsData.length) setBudgetId(prev => prev ?? budgetsData[0].id);
       } catch (err) {
         console.error('Error cargando roles/presupuestos', err);
@@ -88,7 +100,6 @@ export default function CategoryCommissionsPage() {
   };
 
   // helpers money
-  const fmtPct = (v: number | null | undefined) => (typeof v === 'number' ? v.toFixed(2) : '');
   const markDirty = (categoryId: number, dirty = true) => {
     setDirtyIds(prev => {
       const clone = new Set(prev);
@@ -99,34 +110,43 @@ export default function CategoryCommissionsPage() {
   };
 
   // input handlers
-  const onChangeField = (idx: number, field: keyof CategoryWithCommission, rawVal: string) => {
-    const clone = items.slice();
-    const val = rawVal === '' ? null : Number(rawVal);
-    // @ts-ignore
-    clone[idx][field] = val;
-    setItems(clone);
-    markDirty(clone[idx].category_id, true);
-  };
+  // cambiamos el tipo del field a string para poder aceptar campos nuevos como 'participation_pct'
+  const onChangeField = (categoryId: number, field: string, rawVal: string) => {
+  const val = rawVal === '' ? null : Number(rawVal);
+
+  setItems(prev =>
+    prev.map(it =>
+      it.category_id === categoryId
+        ? { ...it, [field]: val }
+        : it
+    )
+  );
+
+  markDirty(categoryId, true);
+};
+
 
   const saveOne = async (it: CategoryWithCommission) => {
     if (!roleId) return;
     setSavingIds(s => [...s, it.category_id]);
     try {
-      await upsertCategoryCommission({
+      const payload = {
         category_id: it.category_id,
         role_id: roleId,
+        budget_id: budgetId,
         commission_percentage: Number(it.commission_percentage ?? 0),
         commission_percentage100: Number(it.commission_percentage100 ?? 0),
         commission_percentage120: Number(it.commission_percentage120 ?? 0),
-        min_pct_to_qualify: Number(it.min_pct_to_qualify ?? 80)
-      });
+        participation_pct: Number(it.participation_pct ?? 0)
+      };
+      console.log('Payload enviado:', payload); // Debug
+      await upsertCategoryCommission(payload);
       setMessage({ type: 'ok', text: 'Guardado' });
       markDirty(it.category_id, false);
-      // reload to get updated ids / values
       await loadCategories(roleId, budgetId);
     } catch (e: any) {
-      console.error('saveOne error', e);
-      setMessage({ type: 'error', text: 'Error al guardar' + (e?.message ? ': ' + e.message : '') });
+      console.error('saveOne error completo:', e.response?.data || e); // Mejor logging
+      setMessage({ type: 'error', text: 'Error al guardar' + (e?.response?.data?.message ? ': ' + e.response.data.message : '') });
     } finally {
       setSavingIds(s => s.filter(id => id !== it.category_id));
       setTimeout(() => setMessage(null), 2000);
@@ -139,10 +159,12 @@ export default function CategoryCommissionsPage() {
     try {
       const payload = items.map(i => ({
         category_id: i.category_id,
+        role_id: roleId,
+        budget_id: budgetId,
         commission_percentage: Number(i.commission_percentage ?? 0),
         commission_percentage100: Number(i.commission_percentage100 ?? 0),
         commission_percentage120: Number(i.commission_percentage120 ?? 0),
-        min_pct_to_qualify: Number(i.min_pct_to_qualify ?? 80)
+        participation_pct: Number(i.participation_pct ?? 0)
       }));
       await bulkSaveCategoryCommissions(roleId, payload);
       setMessage({ type: 'ok', text: 'Guardado masivo exitoso' });
@@ -174,56 +196,71 @@ export default function CategoryCommissionsPage() {
   const anyDirty = useMemo(() => dirtyIds.size > 0, [dirtyIds]);
 
   const normalizedItems = useMemo(() => {
-  const map = new Map<number | string, CategoryWithCommission>();
+    const map = new Map<number | string, CategoryWithCommission>();
 
-  items.forEach(it => {
-    const normalizedName = normalizeCategoryName(it.name);
+    items.forEach(it => {
+      const normalizedName = normalizeCategoryName(it.name);
 
-    // clave única: FRAGANCIA o category_id normal
-    const key = normalizedName === 'FRAGANCIA'
-      ? 'FRAGANCIA'
-      : it.category_id;
+      // clave única: FRAGANCIA o category_id normal
+      const key = it.category_id; // NO fusionar para edición
 
-    if (!map.has(key)) {
-      map.set(key, {
-        ...it,
-        name: normalizedName
-      });
-    } else {
-      // si es FRAGANCIA, combinamos valores (por si existen duplicados)
-      const existing = map.get(key)!;
-      map.set(key, {
-        ...existing,
-        commission_percentage:
-          Math.max(
-            existing.commission_percentage ?? 0,
-            it.commission_percentage ?? 0
-          ),
-        commission_percentage100:
-          Math.max(
-            existing.commission_percentage100 ?? 0,
-            it.commission_percentage100 ?? 0
-          ),
-        commission_percentage120:
-          Math.max(
-            existing.commission_percentage120 ?? 0,
-            it.commission_percentage120 ?? 0
-          ),
-      });
-    }
-  });
+      
 
-  return Array.from(map.values());
-}, [items]);
+      if (!map.has(key)) {
+        map.set(key, {
+          ...it,
+          name: normalizedName
+        });
+      } else {
+        // si es FRAGANCIA, combinamos valores (por si existen duplicados)
+        const existing = map.get(key)!;
+        map.set(key, {
+          ...existing,
+          commission_percentage:
+            Math.max(
+              existing.commission_percentage ?? 0,
+              it.commission_percentage ?? 0
+            ),
+          commission_percentage100:
+            Math.max(
+              existing.commission_percentage100 ?? 0,
+              it.commission_percentage100 ?? 0
+            ),
+          commission_percentage120:
+            Math.max(
+              existing.commission_percentage120 ?? 0,
+              it.commission_percentage120 ?? 0
+            ),
+          participation_pct:
+            Math.max(
+              (existing as any).participation_pct ?? 0,
+              (it as any).participation_pct ?? 0
+            ),
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [items]);
 
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between mb-6 gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">Configuración de participación por categoría</h1>
-          <div className="text-sm text-gray-500">Asigna porcentajes por rol y presupuesto</div>
+        <div className="flex flex-col gap-2">
+          <button
+            onClick={() => navigate('/budget')}
+            className="text-sm text-primary hover:underline w-fit"
+          >
+            ← Volver a Presupuesto
+          </button>
+
+          <div>
+            <h1 className="text-2xl font-bold">Configuración de participación por categoría</h1>
+            <div className="text-sm text-gray-500">Asignación de participación por categoría</div>
+          </div>
         </div>
+
 
         <div className="flex gap-3 items-center">
           <div>
@@ -242,18 +279,7 @@ export default function CategoryCommissionsPage() {
             </select>
           </div>
 
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">Rol</label>
-            <select
-              value={roleId ?? ''}
-              onChange={e => setRoleId(e.target.value ? Number(e.target.value) : null)}
-              className="border rounded px-3 py-2 text-sm"
-            >
-              {roles.map(r => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
+
 
           <div className="flex items-end gap-2">
             <button
@@ -282,6 +308,7 @@ export default function CategoryCommissionsPage() {
               <th className="p-3 text-left">Comisión %</th>
               <th className="p-3 text-left">Comisión 100%</th>
               <th className="p-3 text-left">Comisión 120%</th>
+              <th className="p-3 text-left">Participación %</th>
               <th className="p-3 text-left">Acciones</th>
             </tr>
           </thead>
@@ -291,7 +318,7 @@ export default function CategoryCommissionsPage() {
               <tr><td colSpan={7} className="p-6 text-center text-gray-500">Cargando categorías…</td></tr>
             ) : items.length === 0 ? (
               <tr><td colSpan={7} className="p-6 text-center text-gray-500">No hay categorías.</td></tr>
-            ) : normalizedItems.map((it, idx) => {
+            ) : normalizedItems.map((it) => {
               const isSaving = savingIds.includes(it.category_id);
               const isDirty = dirtyIds.has(it.category_id);
               return (
@@ -308,7 +335,7 @@ export default function CategoryCommissionsPage() {
                       type="number"
                       step="0.01"
                       value={it.commission_percentage ?? ''}
-                      onChange={e => onChangeField(idx, 'commission_percentage', e.target.value)}
+                      onChange={e => onChangeField(it.category_id, 'commission_percentage', e.target.value)}
                       className="border px-2 py-1 rounded w-28"
                     />
                     {isDirty && <div className="text-xxs text-indigo-600 mt-1">modificado</div>}
@@ -319,7 +346,7 @@ export default function CategoryCommissionsPage() {
                       type="number"
                       step="0.01"
                       value={it.commission_percentage100 ?? ''}
-                      onChange={e => onChangeField(idx, 'commission_percentage100', e.target.value)}
+                     onChange={e => onChangeField(it.category_id, 'commission_percentage100', e.target.value)}
                       className="border px-2 py-1 rounded w-28"
                     />
                   </td>
@@ -329,7 +356,17 @@ export default function CategoryCommissionsPage() {
                       type="number"
                       step="0.01"
                       value={it.commission_percentage120 ?? ''}
-                      onChange={e => onChangeField(idx, 'commission_percentage120', e.target.value)}
+                      onChange={e => onChangeField(it.category_id, 'commission_percentage120', e.target.value)}
+                      className="border px-2 py-1 rounded w-28"
+                    />
+                  </td>
+
+                  <td className="p-3 align-top">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={(it as any).participation_pct ?? ''}
+                      onChange={e => onChangeField(it.category_id, 'participation_pct', e.target.value)}
                       className="border px-2 py-1 rounded w-28"
                     />
                   </td>

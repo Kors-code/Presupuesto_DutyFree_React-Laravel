@@ -1,6 +1,6 @@
 import { Link, NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-
+import logo from "../assets/logo3.png";
 /**
  * Navbar:
  * - Desktop: links horizontales + user area
@@ -22,27 +22,32 @@ export default function Navbar() {
     { label: "Comisiones Cajeros", to: "CashierAwards" },
     { label: "Comisiones", to: "/CommissionCardsPage" },
     { label: "Presupuesto", to: "/budget" },
-    { label: "Importar ventas", to: "/import-sales" },
+    { label: "Importarciones", to: "/ImportsManagerPage" },
+    { label: "Pct Categorias", to: "/commissions/categories" },
   ];
 
   return (
+    
     <header
-      className={`fixed w-full z-50 transition-shadow bg-white ${
+      className={`fixed w-full z-50 transition-shadow bg-white h-16 md:h-20${
         scrolled ? "shadow-md" : "shadow-sm"
       }`}
     >
+      
+
+      
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="h-16 flex items-center justify-between">
           {/* Brand */}
           <Link to="/" className="flex items-center gap-3">
-            <div
-              className="w-10 h-10 rounded-md flex items-center justify-center ring-1 ring-gray-100"
-              aria-hidden
-            >
-              <div className="w-7 h-7 rounded-sm bg-primary" />
-            </div>
-            <span className="text-lg font-semibold text-primary">Sky Free Shop</span>
+            <img
+              src={logo}
+              alt="Sky Free Shop"
+              className="h-16 w-auto object-contain"
+            />
+            
           </Link>
+
 
           {/* Desktop nav */}
           <nav className="hidden md:flex items-center gap-6">

@@ -1,4 +1,3 @@
-import React from 'react';
 
 export default function CommissionCard({ title, value }: { title: string; value: string | number; }) {
     return (

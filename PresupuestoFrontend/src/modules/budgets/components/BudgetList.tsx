@@ -1,4 +1,3 @@
-import React from 'react';
 import type { Budget } from '../types';
 
 type Props = {
