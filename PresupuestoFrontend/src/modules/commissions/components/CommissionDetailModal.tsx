@@ -517,9 +517,7 @@ async function downloadExcel() {
                     <th className="p-3 text-left">Marca</th>
                     <th className="p-3 text-left">Producto</th>
                     <th className="p-3 text-right">USD</th>
-                    <th className="p-3 text-right">COP</th>
                     <th className="p-3 text-right">Comisión</th>
-                    <th className="p-3 text-center">Estado</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -530,11 +528,8 @@ async function downloadExcel() {
                       <td className="p-3">{s.brand ?? '—'}</td>
                       <td className="p-3">{s.product || s.folio}</td>
                       <td className="p-3 text-right">{moneyUSD(s.value_usd)}</td>
-                      <td className="p-3 text-right">{moneyCOP(s.amount_cop)}</td>
                       <td className="p-3 text-right font-semibold">{moneyCOP(s.commission_amount || 0)}</td>
-                      <td className="p-3 text-center">
-                        <span className="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs">Provisional</span>
-                      </td>
+
                     </tr>
                   ))}
                 </tbody>

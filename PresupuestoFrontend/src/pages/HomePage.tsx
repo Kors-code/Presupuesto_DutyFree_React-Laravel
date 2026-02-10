@@ -18,10 +18,10 @@ export default function HomePage() {
 
             <div className="flex gap-3 items-center">
               <div className="hidden sm:block text-sm text-gray-500">Acciones rápidas:</div>
-              <a href="/ImportsManagerPage" className="inline-flex items-center px-4 py-2 bg-primary/10 text-primary rounded-lg text-sm font-medium hover:bg-primary/20 transition">
+              <a href="/panel/ImportsManagerPage" className="inline-flex items-center px-4 py-2 bg-primary/10 text-primary rounded-lg text-sm font-medium hover:bg-primary/20 transition">
                 Importar ventas
               </a>
-              <a href="/CommissionCardsPage" className="inline-flex items-center px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:brightness-95 transition">
+              <a href="/panel/CommissionCardsPage" className="inline-flex items-center px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:brightness-95 transition">
                 Ver comisiones
               </a>
             </div>
@@ -35,9 +35,8 @@ export default function HomePage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           <ModuleCard title="Configuracion de presupuestos" to="/budget" description="Crea, Configurar y  Editar" />
-          <ModuleCard title="Seguimiento" to="/CommissionCardsPage" description="Resumen de ventas, KPI´s y comisiones" />
+          <ModuleCard title="Seguimiento Asesores" to="/CommissionCardsPage" description="Resumen de ventas, KPI´s y comisiones" />
           <ModuleCard title="Historial de Importes" to="/ImportsManagerPage" description="Importa, Consulta y edita" />
-          <ModuleCard title="Categorías" to="/commissions/categories" description="Ajustes por categoría" />
           <ModuleCard title="Seguimiento Cajeros" to="/CashierAwards" description="Seguimiento de comisiones por cajero" />
         </div>
       </section>

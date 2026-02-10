@@ -52,7 +52,7 @@ export default function BudgetsPage() {
             onClick={() => navigate('/commissions/categories')}
             className="bg-primary text-white px-4 py-2 rounded-xl"
           >
-            Modificar Participación
+            Modificar Participación categorias
           </button>          {activeInfo && activeInfo.budget && (
             <div className="text-sm text-gray-700">
               Activo: <strong>{activeInfo.budget.name}</strong> — {activeInfo.sales_total ?? 0} ({activeInfo.compliance_pct ?? 0}%)

@@ -5,10 +5,8 @@ import CommissionDetailModal from '../components/CommissionDetailModal';
 type TicketMetrics = {
   tickets_count: number;
   avg_ticket_usd?: number | null;
-  avg_ticket_cop?: number | null;
   avg_units_per_ticket?: number | null;
   max_ticket_usd?: number | null;
-  min_ticket_usd?: number | null;
 };
 
 type SellerRow = {
@@ -200,6 +198,8 @@ export default function CommissionCardsPage() {
     if (rows.length > 0) return (avgTrm / rows.length).toFixed(2);
     return '—';
   })();
+
+  
 
   // filtered & sorted rows
   const displayedRows = useMemo(() => {
@@ -413,10 +413,8 @@ export default function CommissionCardsPage() {
                     <th className="p-2 text-right">Participación %</th>
                     <th className="p-2 text-right">Presupuesto (USD)</th>
                     <th className="p-2 text-right">Ventas (USD)</th>
-                    <th className="p-2 text-right">Ventas (COP)</th>
                     <th className="p-2 text-right">% de categoría</th>
                     <th className="p-2 text-right">Califica</th>
-                    <th className="p-2 text-right">Pct. comisión</th>
                     <th className="p-2 text-right">Comisión (USD)</th>
                     <th className="p-2 text-right">Comisión (COP)</th>
                   </tr>
@@ -432,10 +430,8 @@ export default function CommissionCardsPage() {
                       <td className="p-2 text-right">{(c.participation_pct ?? 0).toFixed(2)}%</td>
                       <td className="p-2 text-right">{moneyUSD(Number(c.category_budget_usd ?? 0))}</td>
                       <td className="p-2 text-right">{Number(c.sales_usd ?? 0).toFixed(2)}</td>
-                      <td className="p-2 text-right">{moneyCOP(Number(c.sales_cop ?? 0))}</td>
                       <td className="p-2 text-right">{c.pct_of_category === null || typeof c.pct_of_category === 'undefined' ? '—' : `${Number(c.pct_of_category).toFixed(2)}%`}</td>
                       <td className="p-2 text-right">{c.qualifies ? 'Sí' : 'No'}</td>
-                      <td className="p-2 text-right">{(typeof c.applied_commission_pct !== 'undefined' && c.applied_commission_pct !== null) ? `${Number(c.applied_commission_pct).toFixed(2)}%` : '—'}</td>
                       <td className="p-2 text-right">{c.projected_commission_usd ? moneyUSD(Number(c.projected_commission_usd)) : (c.commission_usd ? moneyUSD(Number(c.commission_usd)) : '—')}</td>
                       <td className="p-2 text-right">{moneyCOP(Number(c.commission_cop ?? 0))}</td>
                     </tr>
@@ -470,8 +466,8 @@ export default function CommissionCardsPage() {
                       </div>
 
                       <div className="text-right">
-                        <div className="text-xs text-gray-500">Comisión (COP)</div>
-                        <div className="text-xl font-bold text-green-600">{moneyCOP(r.total_commission_cop ?? 0)}</div>
+                        <div className="text-xs text-gray-500">Sales (USD)</div>
+                        <div className="text-xl font-bold text-green-600">{Number(r.total_sales_usd || 0).toFixed(2)}</div>
                       </div>
                     </div>
 
@@ -481,12 +477,12 @@ export default function CommissionCardsPage() {
                         <div className="font-medium">{r.assignedTurns ?? 0}</div>
                       </div>
                       <div className="bg-gray-50 rounded p-2">
-                        <div className="text-xxs text-gray-400">Ventas (COP)</div>
-                        <div className="font-medium">{moneyCOP(Math.trunc(Number(r.total_sales_cop || 0)))}</div>
+                        <div className="text-xxs text-gray-400">Comision COP</div>
+                        <div className="font-medium">{moneyCOP(r.total_commission_cop ?? 0)} </div>
                       </div>
                       <div className="bg-gray-50 rounded p-2">
-                        <div className="text-xxs text-gray-400">Ventas (USD)</div>
-                        <div className="font-medium">{Number(r.total_sales_usd || 0).toFixed(2)} USD</div>
+                        <div className="text-xxs text-gray-400">TRX</div>
+                        <div className="font-medium">{r.tickets?.tickets_count ?? 0}</div>
                       </div>
                     </div>
 
@@ -525,12 +521,10 @@ export default function CommissionCardsPage() {
                   <thead className="bg-gray-800 text-white">
                     <tr>
                       <th className="p-2 text-left">Vendedor</th>
-                      <th className="p-2 text-right">Tickets</th>
-                      <th className="p-2 text-right">Unidad avg</th>
+                      <th className="p-2 text-right">TRX</th>
+                      <th className="p-2 text-right">Unidad Ticket</th>
                       <th className="p-2 text-right">Avg Ticket (USD)</th>
-                      <th className="p-2 text-right">Avg Ticket (COP)</th>
                       <th className="p-2 text-right">Max (USD)</th>
-                      <th className="p-2 text-right">Min (USD)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -540,9 +534,7 @@ export default function CommissionCardsPage() {
                         <td className="p-2 text-right">{r.tickets?.tickets_count ?? 0}</td>
                         <td className="p-2 text-right font-medium">{typeof r.tickets?.avg_units_per_ticket === 'number' ? r.tickets!.avg_units_per_ticket!.toFixed(2) : '—'}</td>
                         <td className="p-2 text-right">{typeof r.tickets?.avg_ticket_usd === 'number' ? moneyUSD(r.tickets!.avg_ticket_usd || 0) : '—'}</td>
-                        <td className="p-2 text-right">{typeof r.tickets?.avg_ticket_cop === 'number' ? moneyCOP(r.tickets!.avg_ticket_cop || 0) : '—'}</td>
                         <td className="p-2 text-right">{typeof r.tickets?.max_ticket_usd === 'number' ? moneyUSD(r.tickets!.max_ticket_usd || 0) : '—'}</td>
-                        <td className="p-2 text-right">{typeof r.tickets?.min_ticket_usd === 'number' ? moneyUSD(r.tickets!.min_ticket_usd || 0) : '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -577,7 +569,6 @@ export default function CommissionCardsPage() {
                     <tr>
                       <th className="p-2 text-left">Vendedor</th>
                       <th className="p-2 text-right">Turnos</th>
-                      <th className="p-2 text-right">Ventas (COP)</th>
                       <th className="p-2 text-right">Ventas (USD)</th>
                       <th className="p-2 text-right">Comisión (USD)</th>
                       <th className="p-2 text-right">Comisión (COP)</th>
@@ -588,7 +579,6 @@ export default function CommissionCardsPage() {
                       <tr key={r.user_id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedSellerId(r.user_id)}>
                         <td className="p-2">{r.seller}</td>
                         <td className="p-2 text-right">{r.assignedTurns}</td>
-                        <td className="p-2 text-right">{moneyCOP(r.total_sales_cop)}</td>
                         <td className="p-2 text-right">{Number(r.total_sales_usd || 0).toFixed(2)}</td>
                         <td className="p-2 text-right font-semibold text-green-600">{moneyUSD(r.total_commission_usd)}</td>
                         <td className="p-2 text-right font-semibold text-green-600">{moneyCOP(r.total_commission_cop)}</td>

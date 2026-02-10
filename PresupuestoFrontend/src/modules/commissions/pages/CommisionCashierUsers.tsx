@@ -47,9 +47,7 @@ export default function CommisionCashierUsers() {
   const [budgetId, setBudgetId] = useState<number | null>(null);
 
   // prize editing
-  const [budgetPrizeDraft, setBudgetPrizeDraft] = useState('');
 
-  console.log(budgetPrizeDraft)
 
 
   // cargar presupuestos
@@ -63,8 +61,6 @@ export default function CommisionCashierUsers() {
         if (list.length && !budgetId) {
           setBudgetId(list[0].id);
           // set draft from first budget if available
-          const prizeVal = getField(list[0], 'cashier_prize', 'cashierPrize', 'prize_at_120', 'prizeAt120');
-          setBudgetPrizeDraft(prizeVal || '');
         }
       })
       .catch(err => console.error('Error loading budgets', err));
@@ -76,9 +72,6 @@ export default function CommisionCashierUsers() {
   // cuando cambia budgetId, sincronizar draft con el budget seleccionado
   useEffect(() => {
     if (!budgetId) return;
-    const b = budgets.find(bb => Number(bb.id) === Number(budgetId));
-    const prizeVal = getField(b, 'cashier_prize', 'cashierPrize', 'prize_at_120', 'prizeAt120');
-    setBudgetPrizeDraft(prizeVal ?? '');
     // fetch report
     loadReport(budgetId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -180,6 +173,14 @@ export default function CommisionCashierUsers() {
     <div className="p-4 sm:p-6 max-w-6xl mx-auto">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
+                  <button
+                    onClick={() => window.location.href = 'https://skyfreeshopdutyfree.com/welcome'}
+                    className="px-4 py-2 rounded-lg bg-gray-200 hover:bg-gray-300 text-sm font-medium"
+                  >
+                    ← Volver
+                  </button>
+
+
           <h2 className="text-lg sm:text-2xl font-bold text-red-700">
             CAJEROS — Comisiones
           </h2>

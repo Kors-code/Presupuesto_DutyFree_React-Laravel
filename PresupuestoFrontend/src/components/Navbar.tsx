@@ -1,6 +1,5 @@
 import { Link, NavLink } from "react-router-dom";
 import { useState, useEffect } from "react";
-import logo from "../assets/logo3.png";
 /**
  * Navbar:
  * - Desktop: links horizontales + user area
@@ -41,7 +40,7 @@ export default function Navbar() {
           {/* Brand */}
           <Link to="/" className="flex items-center gap-3">
             <img
-              src={logo}
+              src="/logo3.png"
               alt="Sky Free Shop"
               className="h-16 w-auto object-contain"
             />
@@ -66,12 +65,12 @@ export default function Navbar() {
             ))}
 
             {/* CTA / user placeholder */}
-            <Link
-              to="/"
+            <a
+              href="https://skyfreeshopdutyfree.com/welcome"
               className="ml-4 inline-flex items-center gap-2 px-3 py-2 rounded-md border border-gray-200 text-sm font-medium hover:bg-primary/5 transition"
             >
               Inicio
-            </Link>
+            </a>
           </nav>
 
           {/* Mobile controls */}
@@ -111,11 +110,7 @@ export default function Navbar() {
             </NavLink>
           ))}
 
-          <div className="pt-2 border-t border-gray-100">
-            <Link to="/users" onClick={() => setOpen(false)} className="block px-3 py-2 rounded text-sm font-medium text-gray-700 hover:text-primary">
-              Mi cuenta
-            </Link>
-          </div>
+          
         </div>
       </div>
     </header>

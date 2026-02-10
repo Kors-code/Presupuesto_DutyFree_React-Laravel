@@ -156,6 +156,7 @@ class ImportSalesController extends Controller
         $productsCache   = [];
         $usersCache      = [];
         $categoriesCache = [];
+        $dailyRoles = [];
 
         $chunkSize   = 500;
         $highestRow  = $sheet->getHighestRow();
@@ -191,7 +192,7 @@ class ImportSalesController extends Controller
 
         // user_id => [ 'YYYY-MM-DD' => true|false ]
         // true = en algún momento del día fue cajero
-        $dailyCashierMatch = [];
+// user_id => [ 'YYYY-MM-DD' => ['seller'=>bool,'cashier'=>bool] ]
 
 
 
@@ -262,6 +263,8 @@ class ImportSalesController extends Controller
 
 
                             $sellerId = $usersCache[$email]->id;
+                           
+
                         } else {
                             // Fallback: usar ID fijo
                             $sellerId = $DEFAULT_SELLER_ID;
@@ -297,7 +300,45 @@ class ImportSalesController extends Controller
                         } catch (\Throwable $e) {
                             $saleDate = now()->toDateString();
                         }
+
+                                // Marcar que este usuario fue VENDEDOR este día
+                            if (!isset($dailyRoles[$sellerId])) {
+                                $dailyRoles[$sellerId] = [];
+                            }
+                            if (!isset($dailyRoles[$sellerId][$saleDate])) {
+                                $dailyRoles[$sellerId][$saleDate] = ['seller' => false, 'cashier' => false];
+                            }
+                            $dailyRoles[$sellerId][$saleDate]['seller'] = true;
+
+
                         $cashierName = $this->firstNotEmpty($assoc, ['cajero', 'cashier']);
+                        if ($cashierName) {
+
+    $cashierEmail = strtolower(Str::slug($cashierName) . '@local');
+
+    if (!isset($usersCache[$cashierEmail])) {
+        $usersCache[$cashierEmail] = User::firstOrCreate(
+            ['email' => $cashierEmail],
+            ['name' => $cashierName]
+        );
+
+        if ($usersCache[$cashierEmail]->wasRecentlyCreated) {
+            $created['users']++;
+        }
+    }
+
+    $cashierId = $usersCache[$cashierEmail]->id;
+
+    if (!isset($dailyRoles[$cashierId])) {
+        $dailyRoles[$cashierId] = [];
+    }
+    if (!isset($dailyRoles[$cashierId][$saleDate])) {
+        $dailyRoles[$cashierId][$saleDate] = ['seller' => false, 'cashier' => false];
+    }
+
+    $dailyRoles[$cashierId][$saleDate]['cashier'] = true;
+}
+
 
                         $normSeller  = $this->normalizePersonName($sellerName);
                         $normCashier = $this->normalizePersonName($cashierName);
@@ -313,20 +354,7 @@ class ImportSalesController extends Controller
                             ]);
                         }
 
-                        // inicializar estructuras
-                        if (!isset($dailyCashierMatch[$sellerId])) {
-                            $dailyCashierMatch[$sellerId] = [];
-                        }
-                        if (!isset($dailyCashierMatch[$sellerId][$saleDate])) {
-                            $dailyCashierMatch[$sellerId][$saleDate] = false;
-                        }
-
-                        // REGLA CLAVE:
-                        // si alguna vez en el día coincide → marcar true
-                        if ($normSeller && $normCashier && $normSeller === $normCashier) {
-                            $dailyCashierMatch[$sellerId][$saleDate] = true;
-                        }
-
+                     
 
 
                         /* ===== Amounts ===== */
@@ -506,34 +534,40 @@ class ImportSalesController extends Controller
 
         $rolesMap = DB::table('roles')->pluck('id', 'name');
 
-        foreach ($dailyCashierMatch as $userId => $dates) {
-            foreach ($dates as $date => $wasCashier) {
+        foreach ($dailyRoles as $userId => $dates) {
+    foreach ($dates as $date => $flags) {
 
-                // DECISIÓN FINAL DEL ROL
-                $roleName = $wasCashier ? 'cajero' : 'vendedor';
-                $roleId = $rolesMap[$roleName] ?? null;
-
-                if (!$roleId) {
-                    Log::warning("Rol '{$roleName}' no existe", [
-                        'user_id' => $userId,
-                        'date' => $date
-                    ]);
-                    continue;
-                }
-
-                // 1 rol por usuario y día
-                 UserRole::updateOrCreate(
-                [
-                    'user_id'    => $userId,
-                    'start_date' => $date,
-                ],
-                [
-                    'role_id'   => $roleId,
-                    'end_date'  => null,
-                ]
-                );
-            }
+        if ($flags['cashier']) {
+            $roleName = 'cajero';   // prioridad
+        } elseif ($flags['seller']) {
+            $roleName = 'vendedor';
+        } else {
+            continue;
         }
+
+        $roleId = $rolesMap[$roleName] ?? null;
+
+        if (!$roleId) {
+            Log::warning("Rol '{$roleName}' no existe", [
+                'user_id' => $userId,
+                'date' => $date
+            ]);
+            continue;
+        }
+
+        UserRole::updateOrCreate(
+            [
+                'user_id'    => $userId,
+                'start_date' => $date,
+            ],
+            [
+                'role_id'   => $roleId,
+                'end_date'  => null,
+            ]
+        );
+    }
+}
+
 
 
 
