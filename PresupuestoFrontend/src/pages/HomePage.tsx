@@ -38,6 +38,7 @@ export default function HomePage() {
           <ModuleCard title="Seguimiento Asesores" to="/CommissionCardsPage" description="Resumen de ventas, KPI´s y comisiones" />
           <ModuleCard title="Historial de Importes" to="/ImportsManagerPage" description="Importa, Consulta y edita" />
           <ModuleCard title="Seguimiento Cajeros" to="/CashierAwards" description="Seguimiento de comisiones por cajero" />
+          <ModuleCard title="Gestion De Usuarios" to="/users" description="Administra usuarios del sistema" />
         </div>
       </section>
 

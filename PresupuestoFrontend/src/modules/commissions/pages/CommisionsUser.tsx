@@ -27,6 +27,7 @@ type Category = {
   applied_commission_pct: number;
   commission_sum_usd: number | null;
 };
+
 type TicketItem = {
   folio: string;
   ticket_usd: number;
@@ -36,6 +37,8 @@ type TicketItem = {
   units_count: number;
   sale_date: string;
 };
+
+const MIN_PCT_TO_QUALIFY = 80; // umbral que pediste
 
 export default function MyCommissionsPage() {
   const [loading, setLoading] = useState(true);
@@ -67,6 +70,10 @@ export default function MyCommissionsPage() {
 
   // UI mobile: mostrar todas las categorías o sólo la fila grande
   const [showAllCategoriesMobile, setShowAllCategoriesMobile] = useState(false);
+
+  // const turnos Totales 
+
+  const [turnosTotales, setTurnosTotales] = useState<number>(0);
 
   /* ================= EFFECTS ================= */
   useEffect(() => {
@@ -116,7 +123,11 @@ export default function MyCommissionsPage() {
       setTickets(d.tickets || []);
       setTicketsSummary(d.tickets_summary || null);
 
-      // Sales: **NO** calcular comisión definitiva en frontend.
+      // turnos 
+
+      setTurnosTotales(d.assigned_turns_for_user || 0);
+
+      // Sales: no recalcular comisión en frontend; usamos lo que venga del backend
       const computedSales: SaleRow[] = (d.sales || []).map((s: any, i: number) => {
         const rowKey = s.id ? String(s.id) : `${s.folio ?? 'nofolio'}-${s.sale_date ?? 'nodate'}-${String(s.product ?? '').slice(0,30)}-${i}`;
         return {
@@ -176,6 +187,11 @@ export default function MyCommissionsPage() {
       : 0)
   );
 
+  // cumplimiento del usuario respecto a su presupuesto
+  const userPct = userBudgetUsd > 0 ? (totalSalesUsd / userBudgetUsd) * 100 : 0;
+  const userPctRounded = Math.round((userPct + Number.EPSILON) * 100) / 100;
+  const meetsBudget = userPct >= MIN_PCT_TO_QUALIFY;
+
   const categoryCards = useMemo(() => {
     return categories.map(c => {
       const sales = Number(c.sales_sum_usd||0);
@@ -224,7 +240,6 @@ export default function MyCommissionsPage() {
         responseType: 'blob'
       });
 
-
       const blob = new Blob(
         [res.data],
         { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
@@ -244,6 +259,14 @@ export default function MyCommissionsPage() {
       alert('Error descargando el Excel');
     }
   }
+  const ticketsCount =
+  Number(ticketsSummary?.tickets_count ?? (tickets.length || 0));
+
+const ticketsPorTurno =
+  turnosTotales > 0
+    ? (ticketsCount / turnosTotales).toFixed(2)
+    : '—';
+
 
   /* ================= MOBILE SALES LIST (render helper) ================= */
   function MobileSalesList({ rows }: { rows: SaleRow[] }) {
@@ -330,16 +353,49 @@ export default function MyCommissionsPage() {
           <div className="p-10 text-center text-gray-400">Cargando información…</div>
         ) : (
           <>
-            {/* KPIS: móvil mejorado -> horizontal scroll en sm y grid en md+ */}
+            {/* KPIS: versión responsiva con DOS FILAS en sm+/md+ y scroll horizontal en XS */}
             <div className="mb-6">
-              <div className="flex gap-4 overflow-x-auto pb-2 md:grid md:grid-cols-7">
-                <Kpi className="min-w-[220px] p-5" label="Ventas USD" value={moneyUSD(totalSalesUsd)} icon="💰"/>
-                <Kpi className="min-w-[200px] p-5" label="PPTO USD" value={moneyUSD(userBudgetUsd)} icon="🎯"/>
-                <Kpi className="min-w-[220px] p-5" label="Comisión USD" value={moneyUSD(totalCommissionUsd)} icon="🏆"/>
-                <Kpi className="min-w-[200px] p-5" label="Comisión COP" value={moneyCOP(totals?.total_commission_cop)} sub={`TRM ${Number(totals?.avg_trm||0).toFixed(2)}`} icon="🇨🇴"/>
-                <Kpi className="min-w-[160px] p-5" label="Tickets" value={String(ticketsSummary?.tickets_count ?? (tickets.length || 0))} icon="🧾"/>
-                <Kpi className="min-w-[200px] p-5" label="Ticket Promedio" value={moneyUSD(Number(ticketsSummary?.avg_ticket_usd ?? 0))} icon="📊"/>
-                <Kpi className="min-w-[180px] p-5" label="Unidades x Ticket" value={avgUnitsPerTicket.toFixed(2)} icon="📦"/>
+              {/* MOBILE: horizontal scroll (visible en <sm) */}
+              <div className="flex gap-4 overflow-x-auto pb-2 sm:hidden">
+                <Kpi className="min-w-[220px] p-4" label="Ventas USD" value={moneyUSD(totalSalesUsd) } icon="💰"/>
+                <Kpi className="min-w-[200px] p-4" label="PPTO USD" value={moneyUSD(userBudgetUsd)} icon="🎯"/>
+                <KpiProgress className="min-w-[220px] p-4" label="Cumplimiento" pct={userPctRounded} minPct={MIN_PCT_TO_QUALIFY}/>
+                <Kpi className="min-w-[220px] p-4" label="Comisión USD" value={meetsBudget ? moneyUSD(totalCommissionUsd) : '—'} icon="🏆" sub={!meetsBudget ? 'No cumple 80%' : undefined}/>
+                <Kpi 
+                  className="p-4" 
+                  label="Tickets por Turno" 
+                  value={ticketsPorTurno} 
+                  sub={`${ticketsCount} tickets / ${turnosTotales} turnos`} 
+                  icon="🧾"
+                />
+                <Kpi className="min-w-[160px] p-4" label="Tickets" value={String(ticketsSummary?.tickets_count ?? (tickets.length || 0))} icon="🧾"/>
+                <Kpi className="min-w-[200px] p-4" label="Ticket Promedio" value={moneyUSD(Number(ticketsSummary?.avg_ticket_usd ?? 0))} icon="📊"/>
+                <Kpi className="min-w-[180px] p-4" label="Unidades x Ticket" value={avgUnitsPerTicket.toFixed(2)} icon="📦"/>
+              </div>
+
+              {/* SM+: grid en DOS FILAS (4 columnas por fila en md, 2 columnas en sm) */}
+              <div className="hidden sm:block">
+                {/* Primera fila */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  <Kpi className="p-4" label="Ventas USD" value={ moneyUSD(totalSalesUsd)} icon="💰"/>
+                  <Kpi className="p-4" label="PPTO USD" value={moneyUSD(userBudgetUsd)} icon="🎯"/>
+                  <KpiProgress className="p-4" label="Cumplimiento" pct={userPctRounded} minPct={MIN_PCT_TO_QUALIFY}/>
+                  <Kpi className="p-4" label="Comisión USD" value={meetsBudget ? moneyUSD(totalCommissionUsd) : '—'} icon="🏆" sub={!meetsBudget ? 'No cumple 80%' : undefined}/>
+                </div>
+
+                {/* Segunda fila */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                  <Kpi 
+                    className="p-4" 
+                    label="Tickets por Turno" 
+                    value={ticketsPorTurno} 
+                    sub={`${ticketsCount} tickets / ${turnosTotales} turnos`} 
+                    icon="🧾"
+                  />
+                  <Kpi className="p-4" label="Tickets" value={String(ticketsSummary?.tickets_count ?? (tickets.length || 0))} icon="🧾"/>
+                  <Kpi className="p-4" label="Ticket Promedio" value={moneyUSD(Number(ticketsSummary?.avg_ticket_usd ?? 0))} icon="📊"/>
+                  <Kpi className="p-4" label="Unidades x Ticket" value={avgUnitsPerTicket.toFixed(2)} icon="📦"/>
+                </div>
               </div>
             </div>
 
@@ -358,7 +414,7 @@ export default function MyCommissionsPage() {
               </div>
             </div>
 
-            {/* CATEGORY VIEW */}
+            {/* CATEGORY VIEW (siempre visible aunque no cumpla) */}
             {categoryView === 'cards' ? (
               <>
                 {/* ===== MOBILE: single row horizontal large cards ===== */}
@@ -367,7 +423,7 @@ export default function MyCommissionsPage() {
                     <>
                       <div className="flex gap-4 overflow-x-auto pb-3 px-1">
                         {categoryCards.slice(0, Math.max(3, Math.min(6, categoryCards.length))).map(c => {
-                          const status = c.pct >= 100 ? 'success' : c.pct >= 90 ? 'warning' : 'danger';
+                          const status = c.pct >= 100 ? 'success' : c.pct >= 80 ? 'warning' : 'danger';
                           return (
                             <div key={c.code} className="bg-white rounded-2xl shadow-lg border p-5 min-w-[300px] flex-shrink-0">
                               <div className={`h-1 w-full rounded-t-2xl mb-3 ${status==='success'?'bg-green-500':status==='warning'?'bg-yellow-500':'bg-red-500'}`} />
@@ -421,7 +477,7 @@ export default function MyCommissionsPage() {
                     <>
                       <div className="space-y-4">
                         {categoryCards.map(c => {
-                          const status = c.pct >= 100 ? 'success' : c.pct >= 90 ? 'warning' : 'danger';
+                          const status = c.pct >= 100 ? 'success' : c.pct >= 80 ? 'warning' : 'danger';
                           return (
                             <div key={c.code} className="bg-white rounded-xl shadow p-4 border">
                               <div className="flex justify-between items-start gap-3 mb-2">
@@ -470,7 +526,7 @@ export default function MyCommissionsPage() {
                 {/* ===== DESKTOP / MD+: grid normal (3 columnas) ===== */}
                 <div className="hidden md:grid md:grid-cols-3 gap-4 mb-8">
                   {categoryCards.map(c=> {
-                    const status = c.pct >= 100 ? 'success' : c.pct >= 90 ? 'warning' : 'danger';
+                    const status = c.pct >= 100 ? 'success' : c.pct >= 80 ? 'warning' : 'danger';
                     return (
                       <div key={c.code} className="bg-white rounded-xl shadow border p-5 relative">
                         <div className={`absolute top-0 left-0 h-1 w-full rounded-t-2xl ${status==='success'?'bg-green-500':status==='warning'?'bg-yellow-500':'bg-red-500'}`} />
@@ -537,82 +593,83 @@ export default function MyCommissionsPage() {
             )}
 
             {/* --- Filters for sales --- */}
-            <div className="mb-4">
-              <h3 className="text-lg font-semibold mb-2">Detalle de ventas</h3>
+            {/* Según pediste: dejamos la sección de ventas tal como la tenías (pero los valores sensibles se muestran/ocultan según meetsBudget) */}
+            <>
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold mb-2">Detalle de ventas</h3>
 
-              <div className="flex flex-col md:flex-row gap-2 mb-3">
-                <div className="flex gap-2 w-full md:w-auto flex-wrap">
-                  <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
-                    <option value="ALL">Todas las categorías</option>
-                    {categoryCards.map((c, idx) => (
-                      <option key={`cat-opt-${c.code}-${idx}`} value={c.code}>{c.name}</option>
-                    ))}
-                  </select>
+                <div className="flex flex-col md:flex-row gap-2 mb-3">
+                  <div className="flex gap-2 w-full md:w-auto flex-wrap">
+                    <select value={filterCat} onChange={e=>setFilterCat(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                      <option value="ALL">Todas las categorías</option>
+                      {categoryCards.map((c, idx) => (
+                        <option key={`cat-opt-${c.code}-${idx}`} value={c.code}>{c.name}</option>
+                      ))}
+                    </select>
 
-                  <select value={filterProvider} onChange={e=>setFilterProvider(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
-                    <option value="ALL">Proveedor: Todos</option>
-                    {providers.map((p, idx) => (<option key={`prov-${p}-${idx}`} value={p}>{p}</option>))}
-                  </select>
+                    <select value={filterProvider} onChange={e=>setFilterProvider(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                      <option value="ALL">Proveedor: Todos</option>
+                      {providers.map((p, idx) => (<option key={`prov-${p}-${idx}`} value={p}>{p}</option>))}
+                    </select>
 
-                  <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
-                    <option value="ALL">Marca: Todas</option>
-                    {brands.map((b, idx) => (<option key={`brand-${b}-${idx}`} value={b}>{b}</option>))}
-                  </select>
+                    <select value={filterBrand} onChange={e=>setFilterBrand(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                      <option value="ALL">Marca: Todas</option>
+                      {brands.map((b, idx) => (<option key={`brand-${b}-${idx}`} value={b}>{b}</option>))}
+                    </select>
 
-                  <select value={filterProduct} onChange={e=>setFilterProduct(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
-                    <option value="ALL">Producto: Todos</option>
-                    {productsList.map((p, idx) => (<option key={`prod-${p}-${idx}`} value={p}>{p}</option>))}
-                  </select>
+                    <select value={filterProduct} onChange={e=>setFilterProduct(e.target.value)} className="border rounded-lg px-3 py-2 text-sm bg-white">
+                      <option value="ALL">Producto: Todos</option>
+                      {productsList.map((p, idx) => (<option key={`prod-${p}-${idx}`} value={p}>{p}</option>))}
+                    </select>
+                  </div>
                 </div>
-
-                
               </div>
-            </div>
 
-            {/* --- Sales table --- */}
-            {/* Table for md+ */}
-            <div className="hidden md:block bg-white rounded-xl shadow overflow-x-auto mb-8">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-100">
-                  <tr>
-                    <th className="p-3 text-left">Fecha</th>
-                    <th className="p-3 text-left">Proveedor</th>
-                    <th className="p-3 text-left">Marca</th>
-                    <th className="p-3 text-left">Producto</th>
-                    <th className="p-3 text-right">Comisión</th>
-                    <th className="p-3 text-right">USD</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredSales.map((s, idx) => (
-                    <tr key={String(s.id ?? s.rowKey ?? `${s.folio}-${s.sale_date}-${idx}`)} className="border-t hover:bg-gray-50">
-                      <td className="p-3">{s.sale_date}</td>
-                      <td className="p-3">{s.provider ?? '—'}</td>
-                      <td className="p-3">{s.brand ?? '—'}</td>
-                      <td className="p-3">{s.product || s.folio}</td>
-                      <td className="p-3 text-right font-semibold">
-                        {s.commission_amount != null
-                          ? moneyCOP(Number(s.commission_amount))
-                          : <span className="text-xs text-gray-500 italic">Calculada por categoría</span>
-                        }
-                      </td>
-                      <td className="p-3 text-right">{moneyUSD(Number(s.value_usd || 0))}</td>
-                    </tr>
-                  ))}
-
-                  {filteredSales.length === 0 && (
+              {/* --- Sales table --- */}
+              {/* Table for md+ */}
+              <div className="hidden md:block bg-white rounded-xl shadow overflow-x-auto mb-8">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-100">
                     <tr>
-                      <td className="p-6 text-center text-gray-500" colSpan={6}>No hay ventas para mostrar</td>
+                      <th className="p-3 text-left">Fecha</th>
+                      <th className="p-3 text-left">Proveedor</th>
+                      <th className="p-3 text-left">Marca</th>
+                      <th className="p-3 text-left">Producto</th>
+                      <th className="p-3 text-right">Comisión</th>
+                      <th className="p-3 text-right">USD</th>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {filteredSales.map((s, idx) => (
+                      <tr key={String(s.id ?? s.rowKey ?? `${s.folio}-${s.sale_date}-${idx}`)} className="border-t hover:bg-gray-50">
+                        <td className="p-3">{s.sale_date}</td>
+                        <td className="p-3">{s.provider ?? '—'}</td>
+                        <td className="p-3">{s.brand ?? '—'}</td>
+                        <td className="p-3">{s.product || s.folio}</td>
+                        <td className="p-3 text-right font-semibold">
+                          {s.commission_amount != null
+                            ? moneyCOP(Number(s.commission_amount))
+                            : <span className="text-xs text-gray-500 italic">Calculada por categoría</span>
+                          }
+                        </td>
+                        <td className="p-3 text-right">{meetsBudget ? moneyUSD(Number(s.value_usd || 0)) : '—'}</td>
+                      </tr>
+                    ))}
 
-            {/* Mobile list for <md */}
-            <div className="md:hidden mb-8">
-              <MobileSalesList rows={filteredSales} />
-            </div>
+                    {filteredSales.length === 0 && (
+                      <tr>
+                        <td className="p-6 text-center text-gray-500" colSpan={6}>No hay ventas para mostrar</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Mobile list for <md */}
+              <div className="md:hidden mb-8">
+                <MobileSalesList rows={filteredSales} />
+              </div>
+            </>
           </>
         )}
       </div>
@@ -632,6 +689,35 @@ function Kpi({ label, value, sub, icon, className }: { label: string; value: str
         <div className="text-2xl">{icon}</div>
       </div>
       {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
+    </div>
+  );
+}
+
+/* ================= KPI PROGRESS (nuevo) ================= */
+function KpiProgress({ label, pct, minPct, className }: { label: string; pct: number; minPct: number; className?: string }) {
+  const pctClamped = Math.max(0, Math.min(100, pct));
+  let colorClass = 'bg-red-500';
+  if (pctClamped >= 100) colorClass = 'bg-green-500';
+  else if (pctClamped >= minPct) colorClass = 'bg-yellow-500';
+
+  return (
+    <div className={`bg-white rounded-2xl shadow-lg border p-4 flex-shrink-0 ${className ?? ''}`}>
+      <div className="flex justify-between items-start gap-2 mb-3">
+        <div>
+          <div className="text-sm text-gray-500">{label}</div>
+          <div className="text-lg sm:text-xl font-bold leading-tight">{pct.toFixed(2)}%</div>
+        </div>
+        <div className="text-2xl">📈</div>
+      </div>
+
+      <div className="w-full bg-gray-200 h-3 rounded overflow-hidden">
+        <div className={`${colorClass} h-3`} style={{ width: `${pctClamped}%`, transition: 'width 400ms ease' }} />
+      </div>
+
+      <div className="mt-2 text-xs text-gray-500">
+        <span>Umbral: {minPct}% — </span>
+        <span>{pct < minPct ? 'No comisiona' : pct < 100 ? 'En progreso' : 'Objetivo alcanzado'}</span>
+      </div>
     </div>
   );
 }

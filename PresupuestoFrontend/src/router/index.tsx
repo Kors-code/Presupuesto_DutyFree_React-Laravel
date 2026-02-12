@@ -11,7 +11,7 @@ import CommissionCardsPage from "../modules/commissions/pages/CommissionCardsPag
 import CommisionCashier from "../modules/commissions/pages/CommisionCashier";
 import CommisionCashierUsers from "../modules/commissions/pages/CommisionCashierUsers";
 import CommisionsUser from "../modules/commissions/pages/CommisionsUser";
-import UsersPage from "../modules/users/pages/UsersPage";
+import UsersManager from "../modules/users/pages/UsersManager";
 
 
 
@@ -34,7 +34,7 @@ export default function AppRouter() {
         <Route element={<MainLayout />}>
           <Route path="/" element={<HomePage />} />
 
-          <Route path="/users" element={<UsersPage />} />
+          <Route path="/users" element={<UsersManager />} />
           <Route path="/ImportsManagerPage" element={<ImportsManagerPage />} />
 
           <Route path="/budget" element={<BudgetPage />} />
